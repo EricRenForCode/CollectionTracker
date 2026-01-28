@@ -92,23 +92,36 @@ Analyze the message and determine:
    - list_collections: User wants to see their collections (e.g., "what am I tracking", "show my items")
    - record_transaction: User is recording consumption or receipt (e.g., "I consumed 2 coffees", "received 5 apples", "I had three teas")
    - get_statistics: User wants statistics (e.g., "how much coffee", "show stats", "total consumption")
+   - clear_data: User wants to clear/delete data (e.g., "clear all data", "delete everything", "reset")
    - help: User needs help
    - general: General conversation or unclear intent
 
-2. Extract entities/items mentioned (e.g., coffee, tea, milk, orange juice)
+2. For clear_data, identify if the user wants to:
+   - "transactions": only clear transactions
+   - "collections": only clear items/entities
+   - "both": clear everything
+   Set entities to ["transactions"], ["collections"], or ["both"] accordingly.
+
+3. Extract entities/items mentioned (e.g., coffee, tea, milk, orange juice)
    - Be flexible with variations: "coffees", "cups of coffee", "coffee beans" all refer to "coffee"
    - Handle multi-word items: "orange juice", "green tea", "iced coffee"
    - IMPORTANT: For statistics queries, if user asks for "all", "everything", "all items", or doesn't specify an item, leave entities EMPTY []
 
-3. For transactions, extract:
+4. For transactions, extract:
    - transaction_type: "consumed" or "received" (interpret synonyms like "used", "had", "got", "bought", "ate", "drank")
    - amount: Convert words to numbers (e.g., "twice" = 2, "three" = 3, "a couple" = 2, "several" = 3)
 
-4. Assess confidence (0.0 to 1.0) and identify if clarification is needed
+5. Assess confidence (0.0 to 1.0) and identify if clarification is needed
+
+IMPORTANT: Use the conversation history (if provided) to resolve pronouns ("it", "they", "both") or to understand the context of the current message. If the user says "yes", "no", "both", or "do it", look at what the Assistant just asked or suggested.
 
 Examples:
 - "I consume coffee twice" → {{"intent_type": "record_transaction", "entities": ["coffee"], "transaction_type": "consumed", "amount": 2, "confidence": 1.0}}
 - "Add tea and milk to my list" → {{"intent_type": "add_collection", "entities": ["tea", "milk"], "confidence": 1.0}}
+- "Clear all my data" → {{"intent_type": "clear_data", "entities": ["both"], "confidence": 1.0, "clarification_needed": "Do you want to clear all transaction data, remove all items from your collection, or both?"}}
+- "Yes both" (context: assistant asked if user wants to clear transactions and collections) → {{"intent_type": "clear_data", "entities": ["both"], "confidence": 1.0}}
+- "Yes" (context: assistant asked if user wants to add 'coffee' to collection) → {{"intent_type": "add_collection", "entities": ["coffee"], "confidence": 1.0}}
+- "Do it for both" (context: assistant asked about adding 'apples' and 'oranges') → {{"intent_type": "add_collection", "entities": ["apples", "oranges"], "confidence": 1.0}}
 - "I had three cups of orange juice" → {{"intent_type": "record_transaction", "entities": ["orange juice"], "transaction_type": "consumed", "amount": 3, "confidence": 1.0}}
 - "Got 5 apples yesterday" → {{"intent_type": "record_transaction", "entities": ["apple"], "transaction_type": "received", "amount": 5, "confidence": 1.0}}
 - "Track coffee, tea, and milk" → {{"intent_type": "add_collection", "entities": ["coffee", "tea", "milk"], "confidence": 1.0}}

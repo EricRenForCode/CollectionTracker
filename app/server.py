@@ -28,6 +28,22 @@ app.add_middleware(
 agent = create_voice_agent()
 storage = get_storage()
 
+# In-memory session history
+sessions = {}
+
+def get_session_history(session_id: str) -> list:
+    """Get or create session history."""
+    if session_id not in sessions:
+        sessions[session_id] = []
+    return sessions[session_id]
+
+def add_to_session_history(session_id: str, role: str, content: str):
+    """Add a message to session history."""
+    history = get_session_history(session_id)
+    history.append({"role": role, "content": content})
+    # Keep only last 10 messages to avoid bloat
+    if len(history) > 10:
+        sessions[session_id] = history[-10:]
 
 @app.get("/")
 async def redirect_root_to_docs() -> RedirectResponse:
@@ -63,7 +79,10 @@ async def process_voice(request: VoiceRequest) -> VoiceResponse:
             )
         
         # Process with agent
-        result = agent.process_message(input_text)
+        session_id = request.session_id or "default"
+        history = get_session_history(session_id)
+        
+        result = agent.process_message(input_text, history)
         
         if not result["success"]:
             raise HTTPException(
@@ -72,6 +91,10 @@ async def process_voice(request: VoiceRequest) -> VoiceResponse:
             )
         
         response_text = result["response"]
+        
+        # Update history
+        add_to_session_history(session_id, "user", input_text)
+        add_to_session_history(session_id, "assistant", response_text)
         
         # Optionally generate audio response
         # audio_response = text_to_speech(response_text)  # Uncomment if needed
@@ -88,18 +111,20 @@ async def process_voice(request: VoiceRequest) -> VoiceResponse:
 
 
 @app.post("/chat")
-async def chat(message: str) -> dict:
+async def chat(message: str, session_id: str = "default") -> dict:
     """
     Simple text chat endpoint (no voice).
     
     Args:
         message: User's text message
+        session_id: Optional session identifier
     
     Returns:
         Agent's response
     """
     try:
-        result = agent.process_message(message)
+        history = get_session_history(session_id)
+        result = agent.process_message(message, history)
         
         if not result["success"]:
             raise HTTPException(
@@ -107,8 +132,14 @@ async def chat(message: str) -> dict:
                 detail=result.get("error", "Agent processing failed")
             )
         
+        response_text = result["response"]
+        
+        # Update history
+        add_to_session_history(session_id, "user", message)
+        add_to_session_history(session_id, "assistant", response_text)
+        
         return {
-            "response": result["response"],
+            "response": response_text,
             "success": True
         }
     

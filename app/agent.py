@@ -31,6 +31,7 @@ class ParsedIntent(BaseModel):
         "list_collections",
         "record_transaction",
         "get_statistics",
+        "clear_data",
         "help",
         "general"
     ] = Field(description="The type of intent detected")
@@ -81,12 +82,13 @@ class VoiceAgent:
         """Get the help message."""
         return HELP_MESSAGE
     
-    def _parse_message_with_llm(self, message: str) -> ParsedIntent:
+    def _parse_message_with_llm(self, message: str, history: Optional[List[Dict[str, str]]] = None) -> ParsedIntent:
         """
         Use LLM to parse user message and extract intent and entities.
         
         Args:
             message: The user's input message
+            history: Optional conversation history
             
         Returns:
             ParsedIntent object with structured information
@@ -96,11 +98,23 @@ class VoiceAgent:
         collections = self.storage.get_entities()
         collections_str = ", ".join(collections) if collections else "none yet"
         
+        # Format history for prompt
+        history_str = ""
+        if history:
+            history_str = "\nConversation history:\n"
+            for msg in history[-5:]:  # Last 5 messages for context
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                history_str += f"{role.capitalize()}: {content}\n"
+
         # Use centralized prompt from prompts.py
         prompt = LLM_PARSING_PROMPT.format(
             collections=collections_str,
             message=message
         )
+        
+        if history_str:
+            prompt = history_str + "\n" + prompt
 
         try:
             # Get response from LLM with system prompt
@@ -139,12 +153,13 @@ class VoiceAgent:
                 clarification_needed="I couldn't understand that. Could you rephrase?"
             )
     
-    def process_message(self, message: str) -> Dict[str, Any]:
+    def process_message(self, message: str, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """
         Process a user message and return a response.
         
         Args:
             message: The user's input message
+            history: Optional conversation history
         
         Returns:
             Dictionary with 'success', 'response', and optional 'transaction_id'
@@ -153,7 +168,7 @@ class VoiceAgent:
             message = message.strip()
             
             # Parse message with LLM
-            parsed = self._parse_message_with_llm(message)
+            parsed = self._parse_message_with_llm(message, history)
             
             # Handle low confidence or need for clarification
             if parsed.confidence < 0.5 or parsed.clarification_needed:
@@ -177,6 +192,9 @@ class VoiceAgent:
             
             elif parsed.intent_type == "get_statistics":
                 return self._handle_statistics_query_llm(parsed)
+            
+            elif parsed.intent_type == "clear_data":
+                return self._handle_clear_data_llm(parsed)
             
             elif parsed.intent_type == "help":
                 return {
@@ -232,6 +250,26 @@ class VoiceAgent:
         
         all_entities = self.storage.get_entities()
         responses.append(f"Currently tracking: {', '.join(all_entities)}")
+        
+        # Check if any of the added items have pending transactions
+        fulfilled_transactions = []
+        for item in added:
+            if item in self.pending_transactions:
+                pending = self.pending_transactions.pop(item)
+                # Create and store transaction
+                entity_proper = self.storage.get_entity_case_preserved(item)
+                transaction = Transaction(
+                    entity=entity_proper,
+                    transaction_type=pending["transaction_type"],
+                    amount=pending["amount"],
+                    description=None,
+                    timestamp=datetime.now()
+                )
+                self.storage.add_transaction(transaction)
+                fulfilled_transactions.append(f"{entity_proper} {pending['transaction_type']} {pending['amount']}")
+        
+        if fulfilled_transactions:
+            responses.append(f"Also recorded: {', '.join(fulfilled_transactions)}.")
         
         return {
             "success": True,
@@ -366,6 +404,43 @@ class VoiceAgent:
             return {
                 "success": True,
                 "response": response
+            }
+    
+    def _handle_clear_data_llm(self, parsed: ParsedIntent) -> Dict[str, Any]:
+        """Handle clearing data (LLM-based)."""
+        if not parsed.entities:
+            return {
+                "success": False,
+                "response": "What would you like to clear? You can clear 'transactions', 'collections', or 'both'."
+            }
+        
+        target = parsed.entities[0].lower()
+        
+        if target == "transactions":
+            self.storage.clear_all_data()
+            return {
+                "success": True,
+                "response": "All transaction data has been cleared. Your collections have been preserved."
+            }
+        elif target == "collections":
+            # This is a bit tricky since we don't have a specific method for just collections
+            # but we can implement it or just use clear_all_including_collections
+            # For now, let's just clear everything if they say collections or both
+            self.storage.clear_all_including_collections()
+            return {
+                "success": True,
+                "response": "All collections and transaction data have been cleared."
+            }
+        elif target == "both":
+            self.storage.clear_all_including_collections()
+            return {
+                "success": True,
+                "response": "All data, including collections and transactions, has been cleared successfully."
+            }
+        else:
+            return {
+                "success": False,
+                "response": f"I'm not sure how to clear '{target}'. Try 'transactions', 'collections', or 'both'."
             }
     
     # Keep old methods for backward compatibility (but they won't be called)
