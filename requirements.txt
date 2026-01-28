@@ -1,0 +1,12 @@
+# Core dependencies
+uvicorn>=0.23.2
+fastapi>=0.109.0
+pydantic>=2.0
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-openai>=0.0.5
+langserve[server]>=0.0.30
+openai>=1.12.0
+
+# Optional: Development tools
+# langchain-cli>=0.0.15
