@@ -356,9 +356,21 @@ class VoiceAgent:
         
         saved_transaction = self.storage.add_transaction(transaction)
         
+        # Get current statistics for the entity
+        stats = self.storage.get_statistics(entity=entity_proper)
+        stat = stats[entity_proper]
+        
+        response = (
+            f"Recorded: {entity_proper} {parsed.transaction_type} {parsed.amount}.\n"
+            f"Current {entity_proper} Statistics:\n"
+            f"- Total consumed: {stat.total_consumed}\n"
+            f"- Total received: {stat.total_received}\n"
+            f"- Net balance: {stat.net_balance}"
+        )
+        
         return {
             "success": True,
-            "response": f"Recorded: {entity_proper} {parsed.transaction_type} {parsed.amount}",
+            "response": response,
             "transaction_id": saved_transaction.id
         }
     
@@ -390,8 +402,7 @@ class VoiceAgent:
                 "response": f"{specific_entity} Statistics:\n" +
                            f"- Total consumed: {stat.total_consumed}\n" +
                            f"- Total received: {stat.total_received}\n" +
-                           f"- Net balance: {stat.net_balance}\n" +
-                           f"- Transactions: {stat.transaction_count}"
+                           f"- Net balance: {stat.net_balance}"
             }
         else:
             # Show all
@@ -625,9 +636,21 @@ class VoiceAgent:
         
         saved_transaction = self.storage.add_transaction(transaction)
         
+        # Get current statistics for the entity
+        stats = self.storage.get_statistics(entity=entity_proper)
+        stat = stats[entity_proper]
+        
+        response = (
+            f"Recorded: {entity_proper} {transaction_type} {amount}.\n"
+            f"Current {entity_proper} Statistics:\n"
+            f"- Total consumed: {stat.total_consumed}\n"
+            f"- Total received: {stat.total_received}\n"
+            f"- Net balance: {stat.net_balance}"
+        )
+        
         return {
             "success": True,
-            "response": f"Recorded: {entity_proper} {transaction_type} {amount}",
+            "response": response,
             "transaction_id": saved_transaction.id
         }
     
@@ -658,8 +681,7 @@ class VoiceAgent:
                 "response": f"{specific_entity} Statistics:\n" +
                            f"- Total consumed: {stat.total_consumed}\n" +
                            f"- Total received: {stat.total_received}\n" +
-                           f"- Net balance: {stat.net_balance}\n" +
-                           f"- Transactions: {stat.transaction_count}"
+                           f"- Net balance: {stat.net_balance}"
             }
         else:
             # Show all
