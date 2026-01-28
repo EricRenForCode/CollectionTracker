@@ -38,6 +38,7 @@ class VoiceRequest(BaseModel):
     audio_data: Optional[str] = Field(default=None, description="Base64 encoded audio data")
     text: Optional[str] = Field(default=None, description="Direct text input (alternative to audio)")
     session_id: Optional[str] = Field(default=None, description="Session identifier for context")
+    language: Optional[str] = Field(default="en", description="Language preference (e.g., 'en', 'zh')")
 
 
 class VoiceResponse(BaseModel):

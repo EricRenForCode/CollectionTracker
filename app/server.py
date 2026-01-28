@@ -81,8 +81,9 @@ async def process_voice(request: VoiceRequest) -> VoiceResponse:
         # Process with agent
         session_id = request.session_id or "default"
         history = get_session_history(session_id)
+        lang = request.language or "en"
         
-        result = agent.process_message(input_text, history)
+        result = agent.process_message(input_text, history, lang=lang)
         
         if not result["success"]:
             raise HTTPException(
@@ -111,20 +112,21 @@ async def process_voice(request: VoiceRequest) -> VoiceResponse:
 
 
 @app.post("/chat")
-async def chat(message: str, session_id: str = "default") -> dict:
+async def chat(message: str, session_id: str = "default", lang: str = "en") -> dict:
     """
     Simple text chat endpoint (no voice).
     
     Args:
         message: User's text message
         session_id: Optional session identifier
+        lang: Language preference
     
     Returns:
         Agent's response
     """
     try:
         history = get_session_history(session_id)
-        result = agent.process_message(message, history)
+        result = agent.process_message(message, history, lang=lang)
         
         if not result["success"]:
             raise HTTPException(
@@ -285,15 +287,15 @@ async def get_recent_transactions(limit: int = 10):
 
 
 @app.get("/welcome")
-async def get_welcome():
+async def get_welcome(lang: str = "en"):
     """Get welcome message."""
-    return {"message": agent.get_welcome_message()}
+    return {"message": agent.get_welcome_message(lang=lang)}
 
 
 @app.get("/help")
-async def get_help():
+async def get_help(lang: str = "en"):
     """Get help message."""
-    return {"message": agent.get_help_message()}
+    return {"message": agent.get_help_message(lang=lang)}
 
 
 @app.delete("/data/clear")

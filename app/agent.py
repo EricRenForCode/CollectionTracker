@@ -1,6 +1,6 @@
 """Voice assistant agent for processing user messages."""
 
-import re
+import json
 from typing import Dict, Any, Optional, List, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -9,17 +9,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.storage import get_storage
 from app.models import Transaction
 from app.llm_config import get_reasoning_llm
-from app.prompts import (
-    SYSTEM_PROMPT,
-    WELCOME_MESSAGE,
-    HELP_MESSAGE,
-    ERROR_ENTITY_NOT_FOUND,
-    ERROR_AMOUNT_NOT_FOUND,
-    ERROR_TRANSACTION_TYPE,
-    ERROR_ENTITY_NOT_IN_COLLECTION,
-    ERROR_NO_COLLECTIONS,
-    LLM_PARSING_PROMPT
-)
+from app.prompts import get_prompt
 
 
 # Pydantic models for structured LLM output
@@ -70,25 +60,28 @@ class VoiceAgent:
         self.pending_transactions = {}  # Store pending transactions waiting for confirmation
         self.llm = get_reasoning_llm(temperature=0.1)  # Low temperature for consistent parsing
     
-    def get_welcome_message(self) -> str:
+    def get_welcome_message(self, lang: str = "en") -> str:
         """Get the welcome message."""
         entities = self.storage.get_entities()
         if not entities:
-            return WELCOME_MESSAGE
+            return get_prompt("welcome", lang)
         else:
+            if lang == "zh":
+                return f"欢迎回来！你目前正在追踪：{', '.join(entities)}。你想做什么？"
             return f"Welcome back! You're currently tracking: {', '.join(entities)}. What would you like to do?"
     
-    def get_help_message(self) -> str:
+    def get_help_message(self, lang: str = "en") -> str:
         """Get the help message."""
-        return HELP_MESSAGE
+        return get_prompt("help", lang)
     
-    def _parse_message_with_llm(self, message: str, history: Optional[List[Dict[str, str]]] = None) -> ParsedIntent:
+    def _parse_message_with_llm(self, message: str, history: Optional[List[Dict[str, str]]] = None, lang: str = "en") -> ParsedIntent:
         """
         Use LLM to parse user message and extract intent and entities.
         
         Args:
             message: The user's input message
             history: Optional conversation history
+            lang: Language for parsing
             
         Returns:
             ParsedIntent object with structured information
@@ -96,19 +89,20 @@ class VoiceAgent:
         import json
         
         collections = self.storage.get_entities()
-        collections_str = ", ".join(collections) if collections else "none yet"
+        collections_str = ", ".join(collections) if collections else ("none yet" if lang == "en" else "暂无")
         
         # Format history for prompt
         history_str = ""
         if history:
-            history_str = "\nConversation history:\n"
+            history_str = "\nConversation history:\n" if lang == "en" else "\n对话历史：\n"
             for msg in history[-5:]:  # Last 5 messages for context
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
-                history_str += f"{role.capitalize()}: {content}\n"
+                role_name = role.capitalize() if lang == "en" else ("用户" if role == "user" else "助手")
+                history_str += f"{role_name}: {content}\n"
 
         # Use centralized prompt from prompts.py
-        prompt = LLM_PARSING_PROMPT.format(
+        prompt = get_prompt("parsing", lang).format(
             collections=collections_str,
             message=message
         )
@@ -119,7 +113,7 @@ class VoiceAgent:
         try:
             # Get response from LLM with system prompt
             messages = [
-                SystemMessage(content=SYSTEM_PROMPT),
+                SystemMessage(content=get_prompt("system", lang)),
                 HumanMessage(content=prompt)
             ]
             response = self.llm.invoke(messages)
@@ -150,16 +144,17 @@ class VoiceAgent:
             return ParsedIntent(
                 intent_type="general",
                 confidence=0.0,
-                clarification_needed="I couldn't understand that. Could you rephrase?"
+                clarification_needed=get_prompt("error_general", lang)
             )
     
-    def process_message(self, message: str, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    def process_message(self, message: str, history: Optional[List[Dict[str, str]]] = None, lang: str = "en") -> Dict[str, Any]:
         """
         Process a user message and return a response.
         
         Args:
             message: The user's input message
             history: Optional conversation history
+            lang: Language preference
         
         Returns:
             Dictionary with 'success', 'response', and optional 'transaction_id'
@@ -168,38 +163,39 @@ class VoiceAgent:
             message = message.strip()
             
             # Parse message with LLM
-            parsed = self._parse_message_with_llm(message, history)
+            parsed = self._parse_message_with_llm(message, history, lang)
             
             # Handle low confidence or need for clarification
             if parsed.confidence < 0.5 or parsed.clarification_needed:
+                default_msg = "I'm not sure what you mean. Could you rephrase that?" if lang == "en" else "我不确定你的意思。你能换个说法吗？"
                 return {
                     "success": True,
-                    "response": parsed.clarification_needed or "I'm not sure what you mean. Could you rephrase that?"
+                    "response": parsed.clarification_needed or default_msg
                 }
             
             # Route to appropriate handler based on intent
             if parsed.intent_type == "add_collection":
-                return self._handle_add_to_collection_llm(parsed)
+                return self._handle_add_to_collection_llm(parsed, lang)
             
             elif parsed.intent_type == "remove_collection":
-                return self._handle_remove_from_collection_llm(parsed)
+                return self._handle_remove_from_collection_llm(parsed, lang)
             
             elif parsed.intent_type == "list_collections":
-                return self._handle_list_collections()
+                return self._handle_list_collections(lang)
             
             elif parsed.intent_type == "record_transaction":
-                return self._handle_transaction_llm(parsed)
+                return self._handle_transaction_llm(parsed, lang)
             
             elif parsed.intent_type == "get_statistics":
-                return self._handle_statistics_query_llm(parsed)
+                return self._handle_statistics_query_llm(parsed, lang)
             
             elif parsed.intent_type == "clear_data":
-                return self._handle_clear_data_llm(parsed)
+                return self._handle_clear_data_llm(parsed, lang)
             
             elif parsed.intent_type == "help":
                 return {
                     "success": True,
-                    "response": self.get_help_message()
+                    "response": self.get_help_message(lang)
                 }
             
             else:  # general
@@ -207,12 +203,16 @@ class VoiceAgent:
                 if not entities:
                     return {
                         "success": True,
-                        "response": ERROR_NO_COLLECTIONS
+                        "response": get_prompt("error_no_collections", lang)
                     }
                 else:
+                    if lang == "zh":
+                        response = f"我不确定你想做什么。目前正在追踪：{', '.join(entities)}。试试说“我喝了2杯咖啡”或“咖啡喝了多少？”"
+                    else:
+                        response = f"I'm not sure what you want to do. Currently tracking: {', '.join(entities)}. Try saying something like 'I consumed 2 coffees' or 'How much coffee have I consumed?'"
                     return {
                         "success": True,
-                        "response": f"I'm not sure what you want to do. Currently tracking: {', '.join(entities)}. Try saying something like 'I consumed 2 coffees' or 'How much coffee have I consumed?'"
+                        "response": response
                     }
         
         except Exception as e:
@@ -222,12 +222,13 @@ class VoiceAgent:
                 "response": f"Sorry, I encountered an error: {str(e)}"
             }
     
-    def _handle_add_to_collection_llm(self, parsed: ParsedIntent) -> Dict[str, Any]:
+    def _handle_add_to_collection_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
         """Handle adding items to collection (LLM-based)."""
         if not parsed.entities:
+            response = "I couldn't identify what items to add. Please tell me what you'd like to track." if lang == "en" else "我没能识别出要添加的物品。请告诉我你想追踪什么。"
             return {
                 "success": False,
-                "response": "I couldn't identify what items to add. Please tell me what you'd like to track."
+                "response": response
             }
         
         added = []
@@ -244,12 +245,21 @@ class VoiceAgent:
         
         responses = []
         if added:
-            responses.append(f"Added {', '.join(added)} to your collection.")
+            if lang == "zh":
+                responses.append(f"已将 {', '.join(added)} 添加到你的集合。")
+            else:
+                responses.append(f"Added {', '.join(added)} to your collection.")
         if already_exists:
-            responses.append(f"{', '.join(already_exists)} already in collection.")
+            if lang == "zh":
+                responses.append(f"{', '.join(already_exists)} 已经在集合中。")
+            else:
+                responses.append(f"{', '.join(already_exists)} already in collection.")
         
         all_entities = self.storage.get_entities()
-        responses.append(f"Currently tracking: {', '.join(all_entities)}")
+        if lang == "zh":
+            responses.append(f"目前正在追踪：{', '.join(all_entities)}")
+        else:
+            responses.append(f"Currently tracking: {', '.join(all_entities)}")
         
         # Check if any of the added items have pending transactions
         fulfilled_transactions = []
@@ -269,19 +279,23 @@ class VoiceAgent:
                 fulfilled_transactions.append(f"{entity_proper} {pending['transaction_type']} {pending['amount']}")
         
         if fulfilled_transactions:
-            responses.append(f"Also recorded: {', '.join(fulfilled_transactions)}.")
+            if lang == "zh":
+                responses.append(f"还记录了：{', '.join(fulfilled_transactions)}。")
+            else:
+                responses.append(f"Also recorded: {', '.join(fulfilled_transactions)}.")
         
         return {
             "success": True,
             "response": " ".join(responses)
         }
     
-    def _handle_remove_from_collection_llm(self, parsed: ParsedIntent) -> Dict[str, Any]:
+    def _handle_remove_from_collection_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
         """Handle removing items from collection (LLM-based)."""
         if not parsed.entities:
+            response = "I couldn't identify what item to remove. Please specify which item." if lang == "en" else "我没能识别出要移除的物品。请指定物品名称。"
             return {
                 "success": False,
-                "response": "I couldn't identify what item to remove. Please specify which item."
+                "response": response
             }
         
         entity = parsed.entities[0].lower()  # Take first entity
@@ -290,14 +304,22 @@ class VoiceAgent:
         if result["success"]:
             remaining = self.storage.get_entities()
             if remaining:
+                if lang == "zh":
+                    response = f"已从集合中移除 {entity}。仍在追踪：{', '.join(remaining)}"
+                else:
+                    response = f"Removed {entity} from your collection. Still tracking: {', '.join(remaining)}"
                 return {
                     "success": True,
-                    "response": f"Removed {entity} from your collection. Still tracking: {', '.join(remaining)}"
+                    "response": response
                 }
             else:
+                if lang == "zh":
+                    response = f"已从集合中移除 {entity}。你的集合现在是空的。"
+                else:
+                    response = f"Removed {entity} from your collection. Your collection is now empty."
                 return {
                     "success": True,
-                    "response": f"Removed {entity} from your collection. Your collection is now empty."
+                    "response": response
                 }
         else:
             return {
@@ -305,25 +327,44 @@ class VoiceAgent:
                 "response": result["error"]
             }
     
-    def _handle_transaction_llm(self, parsed: ParsedIntent) -> Dict[str, Any]:
+    def _handle_list_collections(self, lang: str = "en") -> Dict[str, Any]:
+        """Handle listing all collections."""
+        entities = self.storage.get_entities()
+        
+        if not entities:
+            return {
+                "success": True,
+                "response": get_prompt("error_no_collections", lang)
+            }
+        else:
+            if lang == "zh":
+                response = f"你目前正在追踪 {len(entities)} 个物品：{', '.join(entities)}"
+            else:
+                response = f"You're currently tracking {len(entities)} items: {', '.join(entities)}"
+            return {
+                "success": True,
+                "response": response
+            }
+    
+    def _handle_transaction_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
         """Handle recording a transaction (LLM-based)."""
         # Validate parsed data
         if not parsed.entities:
             return {
                 "success": False,
-                "response": ERROR_ENTITY_NOT_FOUND
+                "response": get_prompt("error_entity_not_found", lang)
             }
         
         if not parsed.transaction_type:
             return {
                 "success": False,
-                "response": ERROR_TRANSACTION_TYPE
+                "response": get_prompt("error_transaction_type", lang)
             }
         
         if parsed.amount is None or parsed.amount <= 0:
             return {
                 "success": False,
-                "response": ERROR_AMOUNT_NOT_FOUND
+                "response": get_prompt("error_amount_not_found", lang)
             }
         
         entity = parsed.entities[0].lower()  # Take first entity
@@ -337,9 +378,10 @@ class VoiceAgent:
                 "amount": parsed.amount,
                 "timestamp": datetime.now()
             }
+            suffix = " (Reply 'yes' to add it, or 'no' to cancel)" if lang == "en" else "（回复“是”添加，或回复“不”取消）"
             return {
                 "success": True,
-                "response": ERROR_ENTITY_NOT_IN_COLLECTION.format(entity=entity) + " (Reply 'yes' to add it, or 'no' to cancel)"
+                "response": get_prompt("error_entity_not_in_collection", lang).format(entity=entity) + suffix
             }
         
         # Get the proper case for the entity
@@ -360,13 +402,23 @@ class VoiceAgent:
         stats = self.storage.get_statistics(entity=entity_proper)
         stat = stats[entity_proper]
         
-        response = (
-            f"Recorded: {entity_proper} {parsed.transaction_type} {parsed.amount}.\n"
-            f"Current {entity_proper} Statistics:\n"
-            f"- Total consumed: {stat.total_consumed}\n"
-            f"- Total received: {stat.total_received}\n"
-            f"- Net balance: {stat.net_balance}"
-        )
+        if lang == "zh":
+            type_zh = "消耗" if parsed.transaction_type == "consumed" else "入库"
+            response = (
+                f"已记录：{entity_proper} {type_zh} {parsed.amount}。\n"
+                f"当前 {entity_proper} 统计：\n"
+                f"- 总消耗：{stat.total_consumed}\n"
+                f"- 总入库：{stat.total_received}\n"
+                f"- 净余额：{stat.net_balance}"
+            )
+        else:
+            response = (
+                f"Recorded: {entity_proper} {parsed.transaction_type} {parsed.amount}.\n"
+                f"Current {entity_proper} Statistics:\n"
+                f"- Total consumed: {stat.total_consumed}\n"
+                f"- Total received: {stat.total_received}\n"
+                f"- Net balance: {stat.net_balance}"
+            )
         
         return {
             "success": True,
@@ -374,14 +426,14 @@ class VoiceAgent:
             "transaction_id": saved_transaction.id
         }
     
-    def _handle_statistics_query_llm(self, parsed: ParsedIntent) -> Dict[str, Any]:
+    def _handle_statistics_query_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
         """Handle statistics queries (LLM-based)."""
         entities = self.storage.get_entities()
         
         if not entities:
             return {
                 "success": True,
-                "response": ERROR_NO_COLLECTIONS
+                "response": get_prompt("error_no_collections", lang)
             }
         
         # Check if asking about specific entity
@@ -397,304 +449,119 @@ class VoiceAgent:
         
         if specific_entity:
             stat = stats[specific_entity]
+            if lang == "zh":
+                response = (
+                    f"{specific_entity} 统计：\n"
+                    f"- 总消耗：{stat.total_consumed}\n"
+                    f"- 总入库：{stat.total_received}\n"
+                    f"- 净余额：{stat.net_balance}"
+                )
+            else:
+                response = (
+                    f"{specific_entity} Statistics:\n"
+                    f"- Total consumed: {stat.total_consumed}\n"
+                    f"- Total received: {stat.total_received}\n"
+                    f"- Net balance: {stat.net_balance}"
+                )
             return {
                 "success": True,
-                "response": f"{specific_entity} Statistics:\n" +
-                           f"- Total consumed: {stat.total_consumed}\n" +
-                           f"- Total received: {stat.total_received}\n" +
-                           f"- Net balance: {stat.net_balance}"
+                "response": response
             }
         else:
             # Show all
-            response = "Statistics for all items:\n"
-            for entity, stat in stats.items():
-                response += f"\n{entity}:\n"
-                response += f"  - Consumed: {stat.total_consumed}\n"
-                response += f"  - Received: {stat.total_received}\n"
-                response += f"  - Balance: {stat.net_balance}\n"
+            if lang == "zh":
+                response = "所有物品统计：\n"
+                for entity, stat in stats.items():
+                    response += f"\n{entity}：\n"
+                    response += f"  - 消耗：{stat.total_consumed}\n"
+                    response += f"  - 入库：{stat.total_received}\n"
+                    response += f"  - 余额：{stat.net_balance}\n"
+            else:
+                response = "Statistics for all items:\n"
+                for entity, stat in stats.items():
+                    response += f"\n{entity}:\n"
+                    response += f"  - Consumed: {stat.total_consumed}\n"
+                    response += f"  - Received: {stat.total_received}\n"
+                    response += f"  - Balance: {stat.net_balance}\n"
             return {
                 "success": True,
                 "response": response
             }
     
-    def _handle_clear_data_llm(self, parsed: ParsedIntent) -> Dict[str, Any]:
+    def _handle_clear_data_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
         """Handle clearing data (LLM-based)."""
         if not parsed.entities:
+            if lang == "zh":
+                response = "你想清除什么？你可以清除“交易记录”、“集合”或“两者”。"
+            else:
+                response = "What would you like to clear? You can clear 'transactions', 'collections', or 'both'."
             return {
                 "success": False,
-                "response": "What would you like to clear? You can clear 'transactions', 'collections', or 'both'."
+                "response": response
             }
         
         target = parsed.entities[0].lower()
         
-        if target == "transactions":
+        if target in ["transactions", "交易记录", "交易"]:
             self.storage.clear_all_data()
+            if lang == "zh":
+                response = "所有交易数据已清除。你的集合已保留。"
+            else:
+                response = "All transaction data has been cleared. Your collections have been preserved."
             return {
                 "success": True,
-                "response": "All transaction data has been cleared. Your collections have been preserved."
+                "response": response
             }
-        elif target == "collections":
-            # This is a bit tricky since we don't have a specific method for just collections
-            # but we can implement it or just use clear_all_including_collections
-            # For now, let's just clear everything if they say collections or both
+        elif target in ["collections", "集合"]:
             self.storage.clear_all_including_collections()
+            if lang == "zh":
+                response = "所有集合和交易数据已清除。"
+            else:
+                response = "All collections and transaction data have been cleared."
             return {
                 "success": True,
-                "response": "All collections and transaction data have been cleared."
+                "response": response
             }
-        elif target == "both":
+        elif target in ["both", "两者", "全部"]:
             self.storage.clear_all_including_collections()
+            if lang == "zh":
+                response = "所有数据（包括集合和交易）已成功清除。"
+            else:
+                response = "All data, including collections and transactions, has been cleared successfully."
             return {
                 "success": True,
-                "response": "All data, including collections and transactions, has been cleared successfully."
+                "response": response
             }
         else:
+            if lang == "zh":
+                response = f"我不确定如何清除“{target}”。请尝试说“交易记录”、“集合”或“全部”。"
+            else:
+                response = f"I'm not sure how to clear '{target}'. Try 'transactions', 'collections', or 'both'."
             return {
                 "success": False,
-                "response": f"I'm not sure how to clear '{target}'. Try 'transactions', 'collections', or 'both'."
+                "response": response
             }
     
     # Keep old methods for backward compatibility (but they won't be called)
     def _handle_add_to_collection(self, message: str) -> Dict[str, Any]:
         """Handle adding items to the collection."""
-        # Try to extract entity names
-        # Patterns: "add X to collection", "track X", "add X and Y"
-        
-        # Remove common words using word boundaries
-        for word in ["add", "to", "collection", "my", "track", "register", "the", "tracking"]:
-            message = re.sub(rf'\b{word}\b', ' ', message, flags=re.IGNORECASE)
-        
-        # Clean up extra spaces first
-        message = ' '.join(message.split())
-        
-        # Split by "and" or commas to get multiple items
-        items = re.split(r'\s+and\s+|,\s*', message)
-        items = [item.strip() for item in items if item.strip() and len(item.strip()) > 0]
-        
-        if not items:
-            return {
-                "success": False,
-                "response": "I couldn't identify what items to add. Please say something like 'Add coffee to my collection' or 'Track apples and oranges'."
-            }
-        
-        added = []
-        already_exists = []
-        
-        for item in items:
-            result = self.storage.add_entity(item)
-            if result["success"]:
-                added.append(item)
-            else:
-                already_exists.append(item)
-        
-        responses = []
-        if added:
-            responses.append(f"Added {', '.join(added)} to your collection.")
-        if already_exists:
-            responses.append(f"{', '.join(already_exists)} already in collection.")
-        
-        all_entities = self.storage.get_entities()
-        responses.append(f"Currently tracking: {', '.join(all_entities)}")
-        
-        return {
-            "success": True,
-            "response": " ".join(responses)
-        }
+        return {"success": False, "response": "This method is deprecated."}
     
     def _handle_remove_from_collection(self, message: str) -> Dict[str, Any]:
         """Handle removing items from the collection."""
-        # Try to extract entity name more carefully
-        entity_text = message
-        
-        # Remove keywords
-        for word in ["remove", "delete", "stop", "tracking", "from", "collection", "my", "the"]:
-            entity_text = re.sub(rf'\b{word}\b', '', entity_text, flags=re.IGNORECASE)
-        
-        # Clean up extra spaces
-        entity = ' '.join(entity_text.split()).strip()
-        
-        if not entity:
-            return {
-                "success": False,
-                "response": "I couldn't identify what item to remove. Please say something like 'Remove coffee from my collection'."
-            }
-        
-        result = self.storage.remove_entity(entity)
-        if result["success"]:
-            remaining = self.storage.get_entities()
-            if remaining:
-                return {
-                    "success": True,
-                    "response": f"Removed {entity} from your collection. Still tracking: {', '.join(remaining)}"
-                }
-            else:
-                return {
-                    "success": True,
-                    "response": f"Removed {entity} from your collection. Your collection is now empty."
-                }
-        else:
-            return {
-                "success": False,
-                "response": result["error"]
-            }
+        return {"success": False, "response": "This method is deprecated."}
     
-    def _handle_list_collections(self) -> Dict[str, Any]:
+    def _handle_list_collections_old(self) -> Dict[str, Any]:
         """Handle listing all collections."""
-        entities = self.storage.get_entities()
-        
-        if not entities:
-            return {
-                "success": True,
-                "response": "You don't have any items in your collection yet. Add some by saying 'Add coffee to my collection'."
-            }
-        else:
-            return {
-                "success": True,
-                "response": f"You're currently tracking {len(entities)} items: {', '.join(entities)}"
-            }
+        return {"success": False, "response": "This method is deprecated."}
     
     def _handle_transaction(self, message: str) -> Dict[str, Any]:
         """Handle recording a transaction (consumed or received)."""
-        # Extract transaction type
-        transaction_type = None
-        if "consumed" in message or "used" in message:
-            transaction_type = "consumed"
-        elif "received" in message or "got" in message:
-            transaction_type = "received"
-        
-        if not transaction_type:
-            return {
-                "success": False,
-                "response": ERROR_TRANSACTION_TYPE
-            }
-        
-        # Extract amount (look for numbers)
-        amount_match = re.search(r'(\d+(?:\.\d+)?)', message)
-        if not amount_match:
-            return {
-                "success": False,
-                "response": ERROR_AMOUNT_NOT_FOUND
-            }
-        
-        amount = float(amount_match.group(1))
-        
-        # Extract entity name more carefully
-        # Remove transaction type keywords and amount
-        entity_text = message
-        
-        # Remove transaction keywords (word boundaries to avoid removing parts of words)
-        if transaction_type == "consumed":
-            entity_text = re.sub(r'\b(consumed|used)\b', ' ', entity_text, flags=re.IGNORECASE)
-        else:
-            entity_text = re.sub(r'\b(received|got)\b', ' ', entity_text, flags=re.IGNORECASE)
-        
-        # Remove the amount (try both integer and float forms)
-        # First try integer form
-        amount_int = int(amount) if amount == int(amount) else None
-        if amount_int is not None:
-            entity_text = re.sub(rf'\b{amount_int}\b', ' ', entity_text)
-        # Also try float form if different
-        entity_text = re.sub(rf'\b{amount}\b', ' ', entity_text)
-        
-        # Remove common words (with word boundaries only - won't affect letters inside words)
-        entity_text = re.sub(r'\b(i|the|a|an|my)\b', ' ', entity_text, flags=re.IGNORECASE)
-        
-        # Clean up extra spaces
-        entity = ' '.join(entity_text.split()).strip()
-        
-        if not entity:
-            return {
-                "success": False,
-                "response": ERROR_ENTITY_NOT_FOUND
-            }
-        
-        # Check if entity exists in collection
-        if not self.storage.entity_exists(entity):
-            # Ask user if they want to add it
-            self.pending_transactions[entity] = {
-                "entity": entity,
-                "transaction_type": transaction_type,
-                "amount": amount,
-                "timestamp": datetime.now()
-            }
-            return {
-                "success": True,
-                "response": ERROR_ENTITY_NOT_IN_COLLECTION.format(entity=entity) + " (Reply 'yes' to add it, or 'no' to cancel)"
-            }
-        
-        # Get the proper case for the entity
-        entity_proper = self.storage.get_entity_case_preserved(entity)
-        
-        # Create and store transaction
-        transaction = Transaction(
-            entity=entity_proper,
-            transaction_type=transaction_type,
-            amount=amount,
-            description=None,
-            timestamp=datetime.now()
-        )
-        
-        saved_transaction = self.storage.add_transaction(transaction)
-        
-        # Get current statistics for the entity
-        stats = self.storage.get_statistics(entity=entity_proper)
-        stat = stats[entity_proper]
-        
-        response = (
-            f"Recorded: {entity_proper} {transaction_type} {amount}.\n"
-            f"Current {entity_proper} Statistics:\n"
-            f"- Total consumed: {stat.total_consumed}\n"
-            f"- Total received: {stat.total_received}\n"
-            f"- Net balance: {stat.net_balance}"
-        )
-        
-        return {
-            "success": True,
-            "response": response,
-            "transaction_id": saved_transaction.id
-        }
+        return {"success": False, "response": "This method is deprecated."}
     
     def _handle_statistics_query(self, message: str) -> Dict[str, Any]:
         """Handle statistics queries."""
-        # Check if asking about all entities or specific one
-        entities = self.storage.get_entities()
-        
-        if not entities:
-            return {
-                "success": True,
-                "response": ERROR_NO_COLLECTIONS
-            }
-        
-        # Try to find specific entity in message
-        specific_entity = None
-        for entity in entities:
-            if entity.lower() in message:
-                specific_entity = entity
-                break
-        
-        stats = self.storage.get_statistics(entity=specific_entity)
-        
-        if specific_entity:
-            stat = stats[specific_entity]
-            return {
-                "success": True,
-                "response": f"{specific_entity} Statistics:\n" +
-                           f"- Total consumed: {stat.total_consumed}\n" +
-                           f"- Total received: {stat.total_received}\n" +
-                           f"- Net balance: {stat.net_balance}"
-            }
-        else:
-            # Show all
-            response = "Statistics for all items:\n"
-            for entity, stat in stats.items():
-                response += f"\n{entity}:\n"
-                response += f"  - Consumed: {stat.total_consumed}\n"
-                response += f"  - Received: {stat.total_received}\n"
-                response += f"  - Balance: {stat.net_balance}\n"
-            return {
-                "success": True,
-                "response": response
-            }
+        return {"success": False, "response": "This method is deprecated."}
 
 
 def create_voice_agent() -> VoiceAgent:

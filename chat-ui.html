@@ -210,6 +210,42 @@
             padding: 40px 48px 24px;
             border-bottom: 1px solid var(--border);
             background: var(--bg-primary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .lang-selector {
+            display: flex;
+            gap: 8px;
+            background: var(--bg-secondary);
+            padding: 4px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .lang-btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: none;
+            background: transparent;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: var(--text-secondary);
+        }
+
+        .lang-btn.active {
+            background: white;
+            color: var(--accent-primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .chat-title-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
         }
 
         .chat-title {
@@ -518,25 +554,25 @@
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <h1 class="app-title">Collection Tracker</h1>
-                <p class="app-subtitle">Voice Assistant</p>
+                <h1 class="app-title" data-i18n="appTitle">Collection Tracker</h1>
+                <p class="app-subtitle" data-i18n="appSubtitle">Voice Assistant</p>
             </div>
             <div class="sidebar-content">
                 <div class="section">
-                    <h2 class="section-title">Your Collections</h2>
+                    <h2 class="section-title" data-i18n="collectionsTitle">Your Collections</h2>
                     <div id="collectionList" class="collection-list">
-                        <div class="empty-state">No collections yet</div>
+                        <div class="empty-state" data-i18n="noCollections">No collections yet</div>
                     </div>
                 </div>
                 <div class="section">
-                    <h2 class="section-title">Quick Stats</h2>
+                    <h2 class="section-title" data-i18n="statsTitle">Quick Stats</h2>
                     <div id="statsContainer" class="stats-grid">
                         <div class="stat-card">
-                            <div class="stat-label">Total Items</div>
+                            <div class="stat-label" data-i18n="statTotalItems">Total Items</div>
                             <div class="stat-value" id="totalItems">0</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-label">Transactions</div>
+                            <div class="stat-label" data-i18n="statTransactions">Transactions</div>
                             <div class="stat-value" id="totalTransactions">0</div>
                         </div>
                     </div>
@@ -547,25 +583,31 @@
         <!-- Main Content -->
         <div class="main-content">
             <div class="chat-header">
-                <h2 class="chat-title">Chat</h2>
-                <div class="chat-status">
-                    <span class="status-dot"></span>
-                    <span id="statusText">Connected</span>
+                <div class="chat-title-group">
+                    <h2 class="chat-title" data-i18n="chatTitle">Chat</h2>
+                    <div class="chat-status">
+                        <span class="status-dot"></span>
+                        <span id="statusText" data-i18n="statusConnected">Connected</span>
+                    </div>
+                </div>
+                <div class="lang-selector">
+                    <button class="lang-btn active" onclick="setLanguage('en')">EN</button>
+                    <button class="lang-btn" onclick="setLanguage('zh')">中文</button>
                 </div>
             </div>
             
             <div id="messagesContainer" class="messages-container">
                 <div class="welcome-message fade-in">
                     <div class="welcome-icon">💬</div>
-                    <h3 class="welcome-title">Welcome to Your Collection Tracker</h3>
-                    <p class="welcome-text">
+                    <h3 class="welcome-title" data-i18n="welcomeTitle">Welcome to Your Collection Tracker</h3>
+                    <p class="welcome-text" data-i18n="welcomeText">
                         I'm your voice assistant for tracking consumption and receipts. 
                         Start by defining what you'd like to track, then record your transactions naturally.
                     </p>
-                    <div class="suggestion-chips">
-                        <div class="suggestion-chip" onclick="sendSuggestion('Add coffee to my collection')">Add coffee</div>
-                        <div class="suggestion-chip" onclick="sendSuggestion('Track tea and milk')">Track multiple items</div>
-                        <div class="suggestion-chip" onclick="sendSuggestion('What can you help me with?')">Get help</div>
+                    <div id="suggestionChips" class="suggestion-chips">
+                        <div class="suggestion-chip" onclick="sendSuggestion('Add coffee to my collection')" data-i18n="suggestAdd">Add coffee</div>
+                        <div class="suggestion-chip" onclick="sendSuggestion('Track tea and milk')" data-i18n="suggestTrack">Track multiple items</div>
+                        <div class="suggestion-chip" onclick="sendSuggestion('What can you help me with?')" data-i18n="suggestHelp">Get help</div>
                     </div>
                 </div>
             </div>
@@ -575,10 +617,11 @@
                     <textarea 
                         id="messageInput" 
                         class="message-input" 
+                        data-i18n-placeholder="inputPlaceholder"
                         placeholder="Type your message... (e.g., 'Add coffee to my collection' or 'I consumed 2 coffees')"
                         rows="1"
                     ></textarea>
-                    <button id="sendButton" class="send-button">Send</button>
+                    <button id="sendButton" class="send-button" data-i18n="sendBtn">Send</button>
                 </div>
             </div>
         </div>
@@ -587,6 +630,105 @@
     <script>
         const API_BASE_URL = 'http://localhost:8000';
         let isWaitingForResponse = false;
+        let currentLanguage = 'en';
+
+        const TRANSLATIONS = {
+            en: {
+                appTitle: 'Collection Tracker',
+                appSubtitle: 'Voice Assistant',
+                collectionsTitle: 'Your Collections',
+                noCollections: 'No collections yet',
+                statsTitle: 'Quick Stats',
+                statTotalItems: 'Total Items',
+                statTransactions: 'Transactions',
+                chatTitle: 'Chat',
+                statusConnected: 'Connected',
+                statusDisconnected: 'Disconnected',
+                welcomeTitle: 'Welcome to Your Collection Tracker',
+                welcomeText: 'I\'m your voice assistant for tracking consumption and receipts. Start by defining what you\'d like to track, then record your transactions naturally.',
+                suggestAdd: 'Add coffee',
+                suggestTrack: 'Track multiple items',
+                suggestHelp: 'Get help',
+                inputPlaceholder: 'Type your message... (e.g., \'Add coffee to my collection\' or \'I consumed 2 coffees\')',
+                sendBtn: 'Send',
+                userLabel: 'You',
+                aiLabel: 'AI',
+                assistantLabel: 'Assistant',
+                errorFailedResponse: 'Sorry, I encountered an error. Please try again.',
+                errorConnection: 'Sorry, I couldn\'t connect to the server. Make sure it\'s running on port 8000.',
+                activeBadge: 'Active',
+                suggestionAddText: 'Add coffee to my collection',
+                suggestionTrackText: 'Track tea and milk',
+                suggestionHelpText: 'What can you help me with?'
+            },
+            zh: {
+                appTitle: '物品追踪助手',
+                appSubtitle: '语音助理',
+                collectionsTitle: '我的集合',
+                noCollections: '暂无集合',
+                statsTitle: '快速统计',
+                statTotalItems: '物品总数',
+                statTransactions: '交易记录',
+                chatTitle: '对话',
+                statusConnected: '已连接',
+                statusDisconnected: '未连接',
+                welcomeTitle: '欢迎使用物品追踪助手',
+                welcomeText: '我是你的语音助手，可以帮你记录物品的消耗和入库。先告诉我你想追踪什么，然后就可以自然地记录交易了。',
+                suggestAdd: '添加咖啡',
+                suggestTrack: '追踪多个物品',
+                suggestHelp: '获取帮助',
+                inputPlaceholder: '输入你的消息... (例如: “添加咖啡到集合” 或 “我喝了2杯咖啡”)',
+                sendBtn: '发送',
+                userLabel: '你',
+                aiLabel: 'AI',
+                assistantLabel: '助手',
+                errorFailedResponse: '抱歉，遇到错误，请重试。',
+                errorConnection: '抱歉，无法连接到服务器。请确保它正在 8000 端口运行。',
+                activeBadge: '活跃',
+                suggestionAddText: '添加咖啡到我的集合',
+                suggestionTrackText: '追踪茶叶和牛奶',
+                suggestionHelpText: '你能帮我做什么？'
+            }
+        };
+
+        function setLanguage(lang) {
+            currentLanguage = lang;
+            
+            // Update UI buttons
+            document.querySelectorAll('.lang-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.textContent.toLowerCase().includes(lang) || (lang === 'zh' && btn.textContent === '中文'));
+            });
+
+            // Update i18n elements
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (TRANSLATIONS[lang][key]) {
+                    el.textContent = TRANSLATIONS[lang][key];
+                }
+            });
+
+            // Update placeholders
+            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+                const key = el.getAttribute('data-i18n-placeholder');
+                if (TRANSLATIONS[lang][key]) {
+                    el.placeholder = TRANSLATIONS[lang][key];
+                }
+            });
+
+            // Update suggestion chips text and actions
+            const suggestionChips = document.getElementById('suggestionChips');
+            if (suggestionChips) {
+                const suggestions = [
+                    { i18n: 'suggestAdd', text: TRANSLATIONS[lang].suggestionAddText },
+                    { i18n: 'suggestTrack', text: TRANSLATIONS[lang].suggestionTrackText },
+                    { i18n: 'suggestHelp', text: TRANSLATIONS[lang].suggestionHelpText }
+                ];
+                
+                suggestionChips.innerHTML = suggestions.map(s => `
+                    <div class="suggestion-chip" onclick="sendSuggestion('${s.text}')" data-i18n="${s.i18n}">${TRANSLATIONS[lang][s.i18n]}</div>
+                `).join('');
+            }
+        }
 
         // DOM elements
         const messagesContainer = document.getElementById('messagesContainer');
@@ -636,12 +778,15 @@
             messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
             
             const now = new Date();
-            const timeString = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            const timeString = now.toLocaleTimeString(currentLanguage === 'zh' ? 'zh-CN' : 'en-US', { hour: 'numeric', minute: '2-digit' });
             
+            const avatarLabel = isUser ? TRANSLATIONS[currentLanguage].userLabel : TRANSLATIONS[currentLanguage].aiLabel;
+            const senderName = isUser ? TRANSLATIONS[currentLanguage].userLabel : sender;
+
             messageDiv.innerHTML = `
                 <div class="message-header">
-                    <div class="message-avatar">${isUser ? 'You' : 'AI'}</div>
-                    <div class="message-sender">${sender}</div>
+                    <div class="message-avatar">${avatarLabel}</div>
+                    <div class="message-sender">${senderName}</div>
                     <div class="message-time">${timeString}</div>
                 </div>
                 <div class="message-content">${content}</div>
@@ -658,8 +803,8 @@
             indicator.className = 'message assistant';
             indicator.innerHTML = `
                 <div class="message-header">
-                    <div class="message-avatar">AI</div>
-                    <div class="message-sender">Assistant</div>
+                    <div class="message-avatar">${TRANSLATIONS[currentLanguage].aiLabel}</div>
+                    <div class="message-sender">${TRANSLATIONS[currentLanguage].assistantLabel}</div>
                 </div>
                 <div class="typing-indicator">
                     <div class="typing-dot"></div>
@@ -683,7 +828,7 @@
             if (!message || isWaitingForResponse) return;
 
             // Add user message
-            addMessage('You', message, true);
+            addMessage(TRANSLATIONS[currentLanguage].userLabel, message, true);
             messageInput.value = '';
             messageInput.style.height = 'auto';
             
@@ -692,7 +837,7 @@
             showTypingIndicator();
 
             try {
-                const response = await fetch(`${API_BASE_URL}/chat?message=${encodeURIComponent(message)}`, {
+                const response = await fetch(`${API_BASE_URL}/chat?message=${encodeURIComponent(message)}&lang=${currentLanguage}`, {
                     method: 'POST'
                 });
 
@@ -702,19 +847,19 @@
                 removeTypingIndicator();
                 
                 if (data.success) {
-                    addMessage('Assistant', data.response, false);
+                    addMessage(TRANSLATIONS[currentLanguage].assistantLabel, data.response, false);
                     
                     // Update collections and stats
                     await updateCollections();
                     await updateStats();
                 } else {
-                    addMessage('Assistant', 'Sorry, I encountered an error. Please try again.', false);
+                    addMessage(TRANSLATIONS[currentLanguage].assistantLabel, TRANSLATIONS[currentLanguage].errorFailedResponse, false);
                 }
             } catch (error) {
                 console.error('Error:', error);
                 removeTypingIndicator();
-                addMessage('Assistant', 'Sorry, I couldn\'t connect to the server. Make sure it\'s running on port 8000.', false);
-                statusText.textContent = 'Disconnected';
+                addMessage(TRANSLATIONS[currentLanguage].assistantLabel, TRANSLATIONS[currentLanguage].errorConnection, false);
+                statusText.textContent = TRANSLATIONS[currentLanguage].statusDisconnected;
             } finally {
                 isWaitingForResponse = false;
                 sendButton.disabled = false;
@@ -732,11 +877,11 @@
                     collectionList.innerHTML = data.collections.map((item, index) => `
                         <div class="collection-item" style="animation-delay: ${index * 0.05}s">
                             <span class="collection-name">${item}</span>
-                            <span class="collection-badge">Active</span>
+                            <span class="collection-badge">${TRANSLATIONS[currentLanguage].activeBadge}</span>
                         </div>
                     `).join('');
                 } else {
-                    collectionList.innerHTML = '<div class="empty-state">No collections yet</div>';
+                    collectionList.innerHTML = `<div class="empty-state">${TRANSLATIONS[currentLanguage].noCollections}</div>`;
                 }
                 
                 totalItems.textContent = data.count || 0;
@@ -764,17 +909,18 @@
                 const data = await response.json();
                 
                 if (data.status === 'healthy') {
-                    statusText.textContent = 'Connected';
+                    statusText.textContent = TRANSLATIONS[currentLanguage].statusConnected;
                     statusText.parentElement.querySelector('.status-dot').style.background = 'var(--accent-secondary)';
                 }
             } catch (error) {
-                statusText.textContent = 'Disconnected';
+                statusText.textContent = TRANSLATIONS[currentLanguage].statusDisconnected;
                 statusText.parentElement.querySelector('.status-dot').style.background = '#ef4444';
             }
         }
 
         // Initialize
         async function init() {
+            setLanguage('en'); // Initial UI setup
             await checkConnection();
             await updateCollections();
             await updateStats();
