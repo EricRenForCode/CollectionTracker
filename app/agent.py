@@ -60,9 +60,9 @@ class VoiceAgent:
         self.pending_transactions = {}  # Store pending transactions waiting for confirmation
         self.llm = get_reasoning_llm(temperature=0.1)  # Low temperature for consistent parsing
     
-    def get_welcome_message(self, lang: str = "en") -> str:
+    def get_welcome_message(self, device_id: str, lang: str = "en") -> str:
         """Get the welcome message."""
-        entities = self.storage.get_entities()
+        entities = self.storage.get_entities(device_id)
         if not entities:
             return get_prompt("welcome", lang)
         else:
@@ -74,12 +74,13 @@ class VoiceAgent:
         """Get the help message."""
         return get_prompt("help", lang)
     
-    def _parse_message_with_llm(self, message: str, history: Optional[List[Dict[str, str]]] = None, lang: str = "en") -> ParsedIntent:
+    def _parse_message_with_llm(self, message: str, device_id: str, history: Optional[List[Dict[str, str]]] = None, lang: str = "en") -> ParsedIntent:
         """
         Use LLM to parse user message and extract intent and entities.
         
         Args:
             message: The user's input message
+            device_id: User's device ID
             history: Optional conversation history
             lang: Language for parsing
             
@@ -88,7 +89,7 @@ class VoiceAgent:
         """
         import json
         
-        collections = self.storage.get_entities()
+        collections = self.storage.get_entities(device_id)
         collections_str = ", ".join(collections) if collections else ("none yet" if lang == "en" else "暂无")
         
         # Format history for prompt
@@ -147,12 +148,13 @@ class VoiceAgent:
                 clarification_needed=get_prompt("error_general", lang)
             )
     
-    def process_message(self, message: str, history: Optional[List[Dict[str, str]]] = None, lang: str = "en") -> Dict[str, Any]:
+    def process_message(self, message: str, device_id: str, history: Optional[List[Dict[str, str]]] = None, lang: str = "en") -> Dict[str, Any]:
         """
         Process a user message and return a response.
         
         Args:
             message: The user's input message
+            device_id: User's device ID
             history: Optional conversation history
             lang: Language preference
         
@@ -163,7 +165,7 @@ class VoiceAgent:
             message = message.strip()
             
             # Parse message with LLM
-            parsed = self._parse_message_with_llm(message, history, lang)
+            parsed = self._parse_message_with_llm(message, device_id, history, lang)
             
             # Handle low confidence or need for clarification
             if parsed.confidence < 0.5 or parsed.clarification_needed:
@@ -175,22 +177,22 @@ class VoiceAgent:
             
             # Route to appropriate handler based on intent
             if parsed.intent_type == "add_collection":
-                return self._handle_add_to_collection_llm(parsed, lang)
+                return self._handle_add_to_collection_llm(parsed, device_id, lang)
             
             elif parsed.intent_type == "remove_collection":
-                return self._handle_remove_from_collection_llm(parsed, lang)
+                return self._handle_remove_from_collection_llm(parsed, device_id, lang)
             
             elif parsed.intent_type == "list_collections":
-                return self._handle_list_collections(lang)
+                return self._handle_list_collections(device_id, lang)
             
             elif parsed.intent_type == "record_transaction":
-                return self._handle_transaction_llm(parsed, lang)
+                return self._handle_transaction_llm(parsed, device_id, lang)
             
             elif parsed.intent_type == "get_statistics":
-                return self._handle_statistics_query_llm(parsed, lang)
+                return self._handle_statistics_query_llm(parsed, device_id, lang)
             
             elif parsed.intent_type == "clear_data":
-                return self._handle_clear_data_llm(parsed, lang)
+                return self._handle_clear_data_llm(parsed, device_id, lang)
             
             elif parsed.intent_type == "help":
                 return {
@@ -199,7 +201,7 @@ class VoiceAgent:
                 }
             
             else:  # general
-                entities = self.storage.get_entities()
+                entities = self.storage.get_entities(device_id)
                 if not entities:
                     return {
                         "success": True,
@@ -222,7 +224,7 @@ class VoiceAgent:
                 "response": f"Sorry, I encountered an error: {str(e)}"
             }
     
-    def _handle_add_to_collection_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
+    def _handle_add_to_collection_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle adding items to collection (LLM-based)."""
         if not parsed.entities:
             response = "I couldn't identify what items to add. Please tell me what you'd like to track." if lang == "en" else "我没能识别出要添加的物品。请告诉我你想追踪什么。"
@@ -237,7 +239,7 @@ class VoiceAgent:
         for item in parsed.entities:
             # Normalize entity name (lowercase for consistency)
             item_lower = item.lower()
-            result = self.storage.add_entity(item_lower)
+            result = self.storage.add_entity(device_id, item_lower)
             if result["success"]:
                 added.append(item_lower)
             else:
@@ -255,7 +257,7 @@ class VoiceAgent:
             else:
                 responses.append(f"{', '.join(already_exists)} already in collection.")
         
-        all_entities = self.storage.get_entities()
+        all_entities = self.storage.get_entities(device_id)
         if lang == "zh":
             responses.append(f"目前正在追踪：{', '.join(all_entities)}")
         else:
@@ -267,7 +269,7 @@ class VoiceAgent:
             if item in self.pending_transactions:
                 pending = self.pending_transactions.pop(item)
                 # Create and store transaction
-                entity_proper = self.storage.get_entity_case_preserved(item)
+                entity_proper = self.storage.get_entity_case_preserved(device_id, item)
                 transaction = Transaction(
                     entity=entity_proper,
                     transaction_type=pending["transaction_type"],
@@ -275,7 +277,7 @@ class VoiceAgent:
                     description=None,
                     timestamp=datetime.now()
                 )
-                self.storage.add_transaction(transaction)
+                self.storage.add_transaction(device_id, transaction)
                 fulfilled_transactions.append(f"{entity_proper} {pending['transaction_type']} {pending['amount']}")
         
         if fulfilled_transactions:
@@ -289,7 +291,7 @@ class VoiceAgent:
             "response": " ".join(responses)
         }
     
-    def _handle_remove_from_collection_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
+    def _handle_remove_from_collection_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle removing items from collection (LLM-based)."""
         if not parsed.entities:
             response = "I couldn't identify what item to remove. Please specify which item." if lang == "en" else "我没能识别出要移除的物品。请指定物品名称。"
@@ -300,9 +302,9 @@ class VoiceAgent:
         
         entity = parsed.entities[0].lower()  # Take first entity
         
-        result = self.storage.remove_entity(entity)
+        result = self.storage.remove_entity(device_id, entity)
         if result["success"]:
-            remaining = self.storage.get_entities()
+            remaining = self.storage.get_entities(device_id)
             if remaining:
                 if lang == "zh":
                     response = f"已从集合中移除 {entity}。仍在追踪：{', '.join(remaining)}"
@@ -327,9 +329,9 @@ class VoiceAgent:
                 "response": result["error"]
             }
     
-    def _handle_list_collections(self, lang: str = "en") -> Dict[str, Any]:
+    def _handle_list_collections(self, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle listing all collections."""
-        entities = self.storage.get_entities()
+        entities = self.storage.get_entities(device_id)
         
         if not entities:
             return {
@@ -346,7 +348,7 @@ class VoiceAgent:
                 "response": response
             }
     
-    def _handle_transaction_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
+    def _handle_transaction_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle recording a transaction (LLM-based)."""
         # Validate parsed data
         if not parsed.entities:
@@ -370,7 +372,7 @@ class VoiceAgent:
         entity = parsed.entities[0].lower()  # Take first entity
         
         # Check if entity exists in collection
-        if not self.storage.entity_exists(entity):
+        if not self.storage.entity_exists(device_id, entity):
             # Ask user if they want to add it
             self.pending_transactions[entity] = {
                 "entity": entity,
@@ -385,7 +387,7 @@ class VoiceAgent:
             }
         
         # Get the proper case for the entity
-        entity_proper = self.storage.get_entity_case_preserved(entity)
+        entity_proper = self.storage.get_entity_case_preserved(device_id, entity)
         
         # Create and store transaction
         transaction = Transaction(
@@ -396,10 +398,10 @@ class VoiceAgent:
             timestamp=datetime.now()
         )
         
-        saved_transaction = self.storage.add_transaction(transaction)
+        saved_transaction = self.storage.add_transaction(device_id, transaction)
         
         # Get current statistics for the entity
-        stats = self.storage.get_statistics(entity=entity_proper)
+        stats = self.storage.get_statistics(device_id, entity=entity_proper)
         stat = stats[entity_proper]
         
         if lang == "zh":
@@ -426,9 +428,9 @@ class VoiceAgent:
             "transaction_id": saved_transaction.id
         }
     
-    def _handle_statistics_query_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
+    def _handle_statistics_query_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle statistics queries (LLM-based)."""
-        entities = self.storage.get_entities()
+        entities = self.storage.get_entities(device_id)
         
         if not entities:
             return {
@@ -441,11 +443,11 @@ class VoiceAgent:
         if parsed.entities:
             # Find matching entity (case-insensitive)
             for entity in parsed.entities:
-                if self.storage.entity_exists(entity.lower()):
-                    specific_entity = self.storage.get_entity_case_preserved(entity.lower())
+                if self.storage.entity_exists(device_id, entity.lower()):
+                    specific_entity = self.storage.get_entity_case_preserved(device_id, entity.lower())
                     break
         
-        stats = self.storage.get_statistics(entity=specific_entity)
+        stats = self.storage.get_statistics(device_id, entity=specific_entity)
         
         if specific_entity:
             stat = stats[specific_entity]
@@ -488,7 +490,7 @@ class VoiceAgent:
                 "response": response
             }
     
-    def _handle_clear_data_llm(self, parsed: ParsedIntent, lang: str = "en") -> Dict[str, Any]:
+    def _handle_clear_data_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle clearing data (LLM-based)."""
         if not parsed.entities:
             if lang == "zh":
@@ -503,7 +505,7 @@ class VoiceAgent:
         target = parsed.entities[0].lower()
         
         if target in ["transactions", "交易记录", "交易"]:
-            self.storage.clear_all_data()
+            self.storage.clear_all_data(device_id)
             if lang == "zh":
                 response = "所有交易数据已清除。你的集合已保留。"
             else:
@@ -513,7 +515,7 @@ class VoiceAgent:
                 "response": response
             }
         elif target in ["collections", "集合"]:
-            self.storage.clear_all_including_collections()
+            self.storage.clear_all_including_collections(device_id)
             if lang == "zh":
                 response = "所有集合和交易数据已清除。"
             else:
@@ -523,7 +525,7 @@ class VoiceAgent:
                 "response": response
             }
         elif target in ["both", "两者", "全部"]:
-            self.storage.clear_all_including_collections()
+            self.storage.clear_all_including_collections(device_id)
             if lang == "zh":
                 response = "所有数据（包括集合和交易）已成功清除。"
             else:

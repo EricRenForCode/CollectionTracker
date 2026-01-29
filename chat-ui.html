@@ -631,6 +631,7 @@
         const API_BASE_URL = 'http://localhost:8000';
         let isWaitingForResponse = false;
         let currentLanguage = 'en';
+        let currentUser = null;
 
         const TRANSLATIONS = {
             en: {
@@ -838,7 +839,8 @@
 
             try {
                 const response = await fetch(`${API_BASE_URL}/chat?message=${encodeURIComponent(message)}&lang=${currentLanguage}`, {
-                    method: 'POST'
+                    method: 'POST',
+                    credentials: 'include'  // Important: include cookies for user identification
                 });
 
                 if (!response.ok) throw new Error('Failed to get response');
@@ -870,7 +872,9 @@
         // Update collections list
         async function updateCollections() {
             try {
-                const response = await fetch(`${API_BASE_URL}/collections`);
+                const response = await fetch(`${API_BASE_URL}/collections`, {
+                    credentials: 'include'
+                });
                 const data = await response.json();
                 
                 if (data.collections && data.collections.length > 0) {
@@ -893,7 +897,9 @@
         // Update statistics
         async function updateStats() {
             try {
-                const response = await fetch(`${API_BASE_URL}/transactions/recent?limit=100`);
+                const response = await fetch(`${API_BASE_URL}/transactions/recent?limit=100`, {
+                    credentials: 'include'
+                });
                 const data = await response.json();
                 
                 totalTransactions.textContent = data.transactions ? data.transactions.length : 0;
@@ -905,7 +911,9 @@
         // Check server connection
         async function checkConnection() {
             try {
-                const response = await fetch(`${API_BASE_URL}/health`);
+                const response = await fetch(`${API_BASE_URL}/health`, {
+                    credentials: 'include'
+                });
                 const data = await response.json();
                 
                 if (data.status === 'healthy') {
@@ -918,9 +926,27 @@
             }
         }
 
+        // Get current user info
+        async function getCurrentUser() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/user/me`, {
+                    credentials: 'include'  // Important: include cookies
+                });
+                if (response.ok) {
+                    currentUser = await response.json();
+                    console.log('User identified:', currentUser.device_id);
+                } else {
+                    console.warn('Failed to get user info');
+                }
+            } catch (error) {
+                console.error('Error getting user info:', error);
+            }
+        }
+
         // Initialize
         async function init() {
             setLanguage('en'); // Initial UI setup
+            await getCurrentUser();  // Get user info first
             await checkConnection();
             await updateCollections();
             await updateStats();

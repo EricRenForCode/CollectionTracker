@@ -1,4 +1,4 @@
-"""Storage layer for managing transactions and statistics."""
+"""Storage layer for managing transactions and statistics with multi-user support."""
 
 import json
 import uuid
@@ -6,146 +6,233 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from app.models import Transaction, EntityStatistics
+from app.database import get_database
 
 
 class TransactionStorage:
-    """Simple JSON-based storage for transactions."""
+    """SQLite-based storage for transactions with multi-user support."""
     
-    def __init__(self, data_file: str = "data/transactions.json"):
-        self.data_file = Path(data_file)
-        self.data_file.parent.mkdir(exist_ok=True)
-        self._ensure_file_exists()
+    def __init__(self):
+        self.db = get_database()
+        # Keep legacy file for migration purposes
+        self.legacy_data_file = Path("data/transactions.json")
+        self._migrate_legacy_data_if_needed()
     
-    def _ensure_file_exists(self):
-        """Ensure the data file exists."""
-        if not self.data_file.exists():
-            self.data_file.write_text(json.dumps({"transactions": [], "collections": []}))
+    def _migrate_legacy_data_if_needed(self):
+        """Migrate data from legacy JSON file to SQLite (one-time migration)."""
+        if not self.legacy_data_file.exists():
+            return
+        
+        # Check if we've already migrated
+        migration_flag = self.legacy_data_file.parent / ".migrated"
+        if migration_flag.exists():
+            return
+        
+        print("Migrating legacy data from JSON to SQLite...")
+        
+        try:
+            with open(self.legacy_data_file, 'r') as f:
+                legacy_data = json.load(f)
+            
+            # Use a default device_id for legacy data
+            legacy_device_id = "device_legacy_0000000000000000"
+            
+            # Create legacy user if not exists
+            if not self.db.get_user_by_device_id(legacy_device_id):
+                self.db.create_user(
+                    device_id=legacy_device_id,
+                    fingerprint="legacy",
+                    user_data={"migrated": True, "note": "Migrated from JSON storage"}
+                )
+            
+            # Migrate collections
+            for entity in legacy_data.get("collections", []):
+                self._add_entity_to_db(legacy_device_id, entity)
+            
+            # Migrate transactions
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                for trans in legacy_data.get("transactions", []):
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO transactions 
+                        (id, device_id, entity, transaction_type, amount, description, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        trans.get("id", str(uuid.uuid4())),
+                        legacy_device_id,
+                        trans["entity"],
+                        trans["transaction_type"],
+                        trans["amount"],
+                        trans.get("description"),
+                        int(datetime.fromisoformat(trans["timestamp"]).timestamp())
+                    ))
+            
+            # Mark as migrated
+            migration_flag.write_text("migrated")
+            print(f"Successfully migrated {len(legacy_data.get('collections', []))} collections and {len(legacy_data.get('transactions', []))} transactions")
+            
+        except Exception as e:
+            print(f"Error during migration: {e}")
     
-    def _read_data(self) -> dict:
-        """Read data from file."""
-        with open(self.data_file, 'r') as f:
-            return json.load(f)
+    def _add_entity_to_db(self, device_id: str, entity_name: str) -> bool:
+        """Internal method to add entity to database."""
+        now = int(datetime.now().timestamp())
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    INSERT INTO collections (device_id, entity_name, created_at)
+                    VALUES (?, ?, ?)
+                """, (device_id, entity_name, now))
+                return True
+            except Exception:
+                return False
     
-    def _write_data(self, data: dict):
-        """Write data to file."""
-        with open(self.data_file, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
-    
-    def add_entity(self, entity_name: str) -> dict:
-        """Add an entity to the collection."""
+    def add_entity(self, device_id: str, entity_name: str) -> dict:
+        """Add an entity to the collection for a specific user."""
         entity_name = entity_name.strip()
         if not entity_name:
             return {"success": False, "error": "Entity name cannot be empty"}
         
-        data = self._read_data()
-        if "collections" not in data:
-            data["collections"] = []
-        
         # Check if entity already exists (case-insensitive)
-        existing_entities = [e.lower() for e in data["collections"]]
-        if entity_name.lower() in existing_entities:
+        existing_entities = self.get_entities(device_id)
+        if entity_name.lower() in [e.lower() for e in existing_entities]:
             return {"success": False, "error": f"Entity '{entity_name}' already exists"}
         
-        data["collections"].append(entity_name)
-        self._write_data(data)
-        return {"success": True, "entity": entity_name}
+        # Add to database
+        if self._add_entity_to_db(device_id, entity_name):
+            return {"success": True, "entity": entity_name}
+        else:
+            return {"success": False, "error": "Failed to add entity"}
     
-    def remove_entity(self, entity_name: str) -> dict:
-        """Remove an entity from the collection."""
-        data = self._read_data()
-        if "collections" not in data:
-            data["collections"] = []
-        
-        # Find and remove (case-insensitive match)
-        found = False
-        for i, entity in enumerate(data["collections"]):
-            if entity.lower() == entity_name.lower():
-                data["collections"].pop(i)
-                found = True
-                break
-        
-        if not found:
-            return {"success": False, "error": f"Entity '{entity_name}' not found"}
-        
-        self._write_data(data)
-        return {"success": True, "entity": entity_name}
+    def remove_entity(self, device_id: str, entity_name: str) -> dict:
+        """Remove an entity from the collection for a specific user."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM collections 
+                WHERE device_id = ? AND entity_name = ? COLLATE NOCASE
+            """, (device_id, entity_name))
+            
+            if cursor.rowcount > 0:
+                return {"success": True, "entity": entity_name}
+            else:
+                return {"success": False, "error": f"Entity '{entity_name}' not found"}
     
-    def get_entities(self) -> List[str]:
-        """Get list of all entities in the collection."""
-        data = self._read_data()
-        return data.get("collections", [])
+    def get_entities(self, device_id: str) -> List[str]:
+        """Get list of all entities in the collection for a specific user."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT entity_name FROM collections 
+                WHERE device_id = ?
+                ORDER BY created_at DESC
+            """, (device_id,))
+            return [row["entity_name"] for row in cursor.fetchall()]
     
-    def entity_exists(self, entity_name: str) -> bool:
+    def entity_exists(self, device_id: str, entity_name: str) -> bool:
         """Check if an entity exists in the collection (case-insensitive)."""
-        entities = self.get_entities()
+        entities = self.get_entities(device_id)
         return entity_name.lower() in [e.lower() for e in entities]
     
-    def get_entity_case_preserved(self, entity_name: str) -> Optional[str]:
+    def get_entity_case_preserved(self, device_id: str, entity_name: str) -> Optional[str]:
         """Get the entity name with its original case from the collection."""
-        entities = self.get_entities()
+        entities = self.get_entities(device_id)
         for entity in entities:
             if entity.lower() == entity_name.lower():
                 return entity
         return None
     
-    def add_transaction(self, transaction: Transaction) -> Transaction:
-        """Add a new transaction."""
+    def add_transaction(self, device_id: str, transaction: Transaction) -> Transaction:
+        """Add a new transaction for a specific user."""
         if not transaction.id:
             transaction.id = str(uuid.uuid4())
         
-        data = self._read_data()
-        transaction_dict = transaction.dict()
-        transaction_dict['timestamp'] = transaction.timestamp.isoformat()
-        data['transactions'].append(transaction_dict)
-        self._write_data(data)
+        timestamp_unix = int(transaction.timestamp.timestamp())
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO transactions 
+                (id, device_id, entity, transaction_type, amount, description, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                transaction.id,
+                device_id,
+                transaction.entity,
+                transaction.transaction_type,
+                transaction.amount,
+                transaction.description,
+                timestamp_unix
+            ))
         
         return transaction
     
     def get_transactions(
         self,
+        device_id: str,
         entity: Optional[str] = None,
         transaction_type: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
     ) -> List[Transaction]:
-        """Get transactions with optional filtering."""
-        data = self._read_data()
-        transactions = []
-        
-        for t_dict in data['transactions']:
-            # Parse datetime
-            t_dict['timestamp'] = datetime.fromisoformat(t_dict['timestamp'])
-            transaction = Transaction(**t_dict)
+        """Get transactions with optional filtering for a specific user."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
             
-            # Apply filters
-            if entity and transaction.entity != entity:
-                continue
-            if transaction_type and transaction.transaction_type != transaction_type:
-                continue
-            if start_date and transaction.timestamp < start_date:
-                continue
-            if end_date and transaction.timestamp > end_date:
-                continue
+            query = "SELECT * FROM transactions WHERE device_id = ?"
+            params = [device_id]
             
-            transactions.append(transaction)
-        
-        return transactions
+            if entity:
+                query += " AND entity = ?"
+                params.append(entity)
+            
+            if transaction_type:
+                query += " AND transaction_type = ?"
+                params.append(transaction_type)
+            
+            if start_date:
+                query += " AND timestamp >= ?"
+                params.append(int(start_date.timestamp()))
+            
+            if end_date:
+                query += " AND timestamp <= ?"
+                params.append(int(end_date.timestamp()))
+            
+            query += " ORDER BY timestamp DESC"
+            
+            cursor.execute(query, params)
+            
+            transactions = []
+            for row in cursor.fetchall():
+                transactions.append(Transaction(
+                    id=row["id"],
+                    entity=row["entity"],
+                    transaction_type=row["transaction_type"],
+                    amount=row["amount"],
+                    description=row["description"],
+                    timestamp=datetime.fromtimestamp(row["timestamp"])
+                ))
+            
+            return transactions
     
     def get_statistics(
         self,
+        device_id: str,
         entity: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
     ) -> Dict[str, EntityStatistics]:
-        """Get statistics for entities."""
+        """Get statistics for entities for a specific user."""
         transactions = self.get_transactions(
+            device_id=device_id,
             entity=entity,
             start_date=start_date,
             end_date=end_date
         )
         
         # Initialize statistics for user-defined entities only
-        entities = [entity] if entity else self.get_entities()
+        entities = [entity] if entity else self.get_entities(device_id)
         stats = {
             e: EntityStatistics(
                 entity=e,
@@ -160,6 +247,9 @@ class TransactionStorage:
         
         # Calculate statistics
         for transaction in transactions:
+            if transaction.entity not in stats:
+                continue
+                
             entity_stats = stats[transaction.entity]
             entity_stats.transaction_count += 1
             
@@ -180,22 +270,23 @@ class TransactionStorage:
         
         return stats
     
-    def clear_all_data(self):
-        """Clear all transaction data (useful for testing)."""
-        data = self._read_data()
-        # Keep collections but clear transactions
-        data["transactions"] = []
-        self._write_data(data)
+    def clear_all_data(self, device_id: str):
+        """Clear all transaction data for a specific user (useful for testing)."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM transactions WHERE device_id = ?", (device_id,))
     
-    def clear_all_including_collections(self):
-        """Clear all data including collections."""
-        self._write_data({"transactions": [], "collections": []})
+    def clear_all_including_collections(self, device_id: str):
+        """Clear all data including collections for a specific user."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM transactions WHERE device_id = ?", (device_id,))
+            cursor.execute("DELETE FROM collections WHERE device_id = ?", (device_id,))
     
-    def get_recent_transactions(self, limit: int = 10) -> List[Transaction]:
-        """Get the most recent transactions."""
-        transactions = self.get_transactions()
-        transactions.sort(key=lambda t: t.timestamp, reverse=True)
-        return transactions[:limit]
+    def get_recent_transactions(self, device_id: str, limit: int = 10) -> List[Transaction]:
+        """Get the most recent transactions for a specific user."""
+        transactions = self.get_transactions(device_id)
+        return transactions[:limit]  # Already sorted by timestamp DESC
 
 
 # Global storage instance
@@ -208,3 +299,12 @@ def get_storage() -> TransactionStorage:
     if _storage is None:
         _storage = TransactionStorage()
     return _storage
+
+
+def get_legacy_storage() -> TransactionStorage:
+    """
+    Get storage instance for legacy (non-user-specific) operations.
+    Uses a special legacy device_id.
+    This is for backward compatibility only.
+    """
+    return get_storage()
