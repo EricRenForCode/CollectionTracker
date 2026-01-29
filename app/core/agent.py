@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.storage import get_storage
-from app.models import Transaction
-from app.llm_config import get_reasoning_llm
-from app.prompts import get_prompt
+from app.api.models import Transaction
+from app.core.llm_config import get_reasoning_llm
+from app.core.prompts import get_prompt
 
 
 # Pydantic models for structured LLM output

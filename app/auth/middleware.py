@@ -5,7 +5,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-from app.user_session import get_session_manager
+from app.auth.user_session import get_session_manager
 
 
 class UserIdentificationMiddleware(BaseHTTPMiddleware):

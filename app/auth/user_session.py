@@ -4,8 +4,8 @@ from typing import Dict, Optional, Any
 from fastapi import Request, Response
 from datetime import datetime
 
-from app.database import get_database
-from app.device_fingerprint import (
+from app.storage.database import get_database
+from app.auth.device_fingerprint import (
     generate_device_fingerprint,
     generate_device_id,
     extract_device_features,

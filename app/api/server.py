@@ -6,12 +6,11 @@ from typing import Optional
 from datetime import datetime
 from pathlib import Path
 
-from app.models import VoiceRequest, VoiceResponse, StatisticsQuery
-from app.agent import create_voice_agent
-from app.voice_utils import speech_to_text, text_to_speech
+from app.api.models import VoiceRequest, VoiceResponse, StatisticsQuery
+from app.core.agent import create_voice_agent
+from app.utils.voice_utils import speech_to_text, text_to_speech
 from app.storage import get_storage
-from app.middleware import UserIdentificationMiddleware, get_current_device_id, get_current_user
-from app.user_session import get_session_manager
+from app.auth import UserIdentificationMiddleware, get_current_device_id, get_current_user, get_session_manager
 
 app = FastAPI(
     title="Voice Assistant API",
@@ -56,7 +55,7 @@ def add_to_session_history(device_id: str, role: str, content: str):
 @app.get("/")
 async def serve_chat_ui():
     """Serve the chat UI."""
-    html_path = Path(__file__).parent.parent / "chat-ui.html"
+    html_path = Path(__file__).parent.parent.parent / "frontend" / "chat-ui.html"
     if html_path.exists():
         return FileResponse(html_path)
     return RedirectResponse("/docs")

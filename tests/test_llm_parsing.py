@@ -5,7 +5,7 @@ that the old regex approach couldn't handle.
 """
 
 import sys
-from app.agent import create_voice_agent
+from app.core.agent import create_voice_agent
 from app.storage import get_storage
 
 

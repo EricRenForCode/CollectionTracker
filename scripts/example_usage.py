@@ -4,7 +4,7 @@ This script demonstrates how to interact with the voice assistant programmatical
 """
 
 import os
-from app.agent import create_voice_agent
+from app.core.agent import create_voice_agent
 from app.storage import get_storage
 
 

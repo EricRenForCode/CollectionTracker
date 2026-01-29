@@ -5,8 +5,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-from app.models import Transaction, EntityStatistics
-from app.database import get_database
+from app.api.models import Transaction, EntityStatistics
+from app.storage.database import get_database
 
 
 class TransactionStorage:
