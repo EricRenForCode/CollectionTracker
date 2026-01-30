@@ -41,41 +41,85 @@ voice-assistant/
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### Option 1: Docker (Recommended)
+
+```bash
+# 1. Copy and edit environment file
+cp .env.example .env
+nano .env  # Add your API keys
+
+# 2. Start with Docker Compose
+docker-compose up -d
+
+# 3. Access the application
+# Web Interface: http://localhost:8000/
+# API Docs: http://localhost:8000/docs
+```
+
+See [DOCKER_QUICK_START.md](DOCKER_QUICK_START.md) for more details.
+
+### Option 2: Local Development
+
+**1. Install Dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Set up Environment
+**2. Set up Environment**
 
 ```bash
 cp .env.example .env
-# Edit .env and add your OpenAI API key
+# Edit .env and add your API keys
 ```
 
-### 3. Run the Server
+**3. Run the Server**
 
-**Development mode (auto-reload):**
 ```bash
+# Development mode (auto-reload)
+./start_server.sh dev
+
+# Or manually
 uvicorn app.api.server:app --reload
 ```
 
-**Production mode (with workers):**
-```bash
-uvicorn app.api.server:app --workers 4 --host 0.0.0.0 --port 8000
-```
-
-### 4. Access the Application
+**4. Access the Application**
 
 - **Web Interface**: http://localhost:8000/
 - **API Documentation**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
 
+## 🐳 Docker & Deployment
+
+### Quick Deploy
+
+```bash
+# Local development
+docker-compose up -d
+
+# Production
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+### Aliyun Deployment
+
+```bash
+# 1. Create ECS instance (2核4G)
+# 2. Install Docker: curl -fsSL https://get.docker.com | sh
+# 3. Deploy
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+**Full Guides:**
+- [Docker Quick Start](DOCKER_QUICK_START.md) - Get running in 5 minutes
+- [Docker Deployment Guide](docs/en/DOCKER_DEPLOYMENT.md) - Complete Docker guide
+- [Aliyun Deployment Guide (中文)](docs/zh/ALIYUN_DEPLOYMENT.md) - 阿里云部署完整指南
+
 ## 📖 Documentation
 
 - [English Documentation](docs/en/)
 - [中文文档](docs/zh/)
+- [Reorganization Summary](REORGANIZATION.md) - Project structure changes
 
 ## 🧪 Running Tests
 
