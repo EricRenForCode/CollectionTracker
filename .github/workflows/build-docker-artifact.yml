@@ -1,0 +1,104 @@
+name: Build Docker Image Archive
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+
+env:
+  IMAGE_NAME: voice-assistant
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Extract version info
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=$(git rev-parse --short HEAD)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "filename=${{ env.IMAGE_NAME }}-${VERSION}.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save Docker image to tar.gz
+        run: |
+          docker save ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} | gzip > ${{ steps.version.outputs.filename }}
+          ls -lh ${{ steps.version.outputs.filename }}
+
+      - name: Upload Docker image as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-image
+          path: ${{ steps.version.outputs.filename }}
+          retention-days: 30
+
+      - name: Create Release and Upload Asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ steps.version.outputs.filename }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate deployment instructions
+        run: |
+          cat > DEPLOYMENT_INSTRUCTIONS.txt << 'EOF'
+          Docker Image Deployment Instructions
+          =====================================
+          
+          Version: ${{ steps.version.outputs.version }}
+          Filename: ${{ steps.version.outputs.filename }}
+          
+          To deploy this Docker image:
+          
+          1. Download the tar.gz file from GitHub Actions artifacts or Release assets
+          
+          2. Load the image:
+             gunzip -c ${{ steps.version.outputs.filename }} | docker load
+          
+          3. Verify the image is loaded:
+             docker images | grep ${{ env.IMAGE_NAME }}
+          
+          4. Run the container:
+             docker run -d -p 8000:8000 \
+               --name voice-assistant \
+               -v $(pwd)/data:/app/data \
+               ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          
+          5. Check logs:
+             docker logs -f voice-assistant
+          
+          For production deployment with docker-compose, update your docker-compose.yml
+          to use the loaded image tag: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          EOF
+          cat DEPLOYMENT_INSTRUCTIONS.txt
+
+      - name: Upload deployment instructions
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-instructions
+          path: DEPLOYMENT_INSTRUCTIONS.txt
+          retention-days: 30
