@@ -101,19 +101,6 @@ docker-compose up -d
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
-### Aliyun Deployment
-
-```bash
-# 1. Create ECS instance (2核4G)
-# 2. Install Docker: curl -fsSL https://get.docker.com | sh
-# 3. Deploy
-docker-compose -f docker-compose.prod.yml up -d
-```
-
-**Full Guides:**
-- [Docker Quick Start](DOCKER_QUICK_START.md) - Get running in 5 minutes
-- [Docker Deployment Guide](docs/en/DOCKER_DEPLOYMENT.md) - Complete Docker guide
-- [Aliyun Deployment Guide (中文)](docs/zh/ALIYUN_DEPLOYMENT.md) - 阿里云部署完整指南
 
 ## 📖 Documentation
 
