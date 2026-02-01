@@ -628,7 +628,10 @@
     </div>
 
     <script>
-        const API_BASE_URL = 'http://localhost:8000';
+        // Use relative URL for production (nginx proxy) or fallback to localhost for development
+        const API_BASE_URL = window.location.hostname === 'localhost' 
+            ? 'http://localhost:8000'
+            : '/collection_tracker';
         let isWaitingForResponse = false;
         let currentLanguage = 'en';
         let currentUser = null;
