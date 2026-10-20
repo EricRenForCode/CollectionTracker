@@ -68,6 +68,9 @@ If the user has no collections yet, guide them to define their collection first.
 
 Respond naturally and guide the user on how you can help them."""
 
+# System prompt for the general-conversation fallback
+GENERAL_SYSTEM_PROMPT = """You are a friendly assistant for tracking consumption and receipts. Answer briefly and naturally, using only the conversation history provided. Never invent facts that are not in the history. If the user asks what they just said, quote or paraphrase the history accurately.""" 
+
 # Voice interaction prompts
 WELCOME_MESSAGE = "Hello! I'm your voice assistant. I can help you track consumption and receipts for your items. First, let's set up your collection - what items would you like to track?"
 
@@ -245,6 +248,14 @@ CHINESE_HELP_MESSAGE = """我可以帮你：
 
 你想做什么？"""
 
+CHINESE_GENERAL_SYSTEM_PROMPT = """你是一个得力的物品追踪助手。请只依据提供的对话历史，简短、自然地回答；不要编造历史中没有的内容。如果用户问“我刚才说了什么”，就根据对话历史准确回答。"""
+
+CHINESE_GENERAL_CONVERSATION_PROMPT = """当前追踪的物品：{collections}
+
+用户说：{user_message}
+
+请结合上面的对话历史，用 2-3 句自然、简短地回答。若用户问“我刚才说了什么”，根据历史如实回答；若只是打招呼或闲聊，简短回应，并说明你可以帮他记录消耗/入库、查看统计或管理追踪的物品。"""
+
 CHINESE_ERROR_ENTITY_NOT_FOUND = "我没能识别出物品名称。你能说明是哪个物品吗？"
 CHINESE_ERROR_AMOUNT_NOT_FOUND = "我没能识别出数量。你能指定一个数字吗？"
 CHINESE_ERROR_TRANSACTION_TYPE = "我无法确定这是消耗还是入库。你能澄清一下吗？"
@@ -258,6 +269,8 @@ PROMPTS = {
     "en": {
         "system": SYSTEM_PROMPT,
         "parsing": LLM_PARSING_PROMPT,
+        "general": GENERAL_CONVERSATION_PROMPT,
+        "general_system": GENERAL_SYSTEM_PROMPT,
         "welcome": WELCOME_MESSAGE,
         "help": HELP_MESSAGE,
         "error_entity_not_found": ERROR_ENTITY_NOT_FOUND,
@@ -270,6 +283,8 @@ PROMPTS = {
     "zh": {
         "system": CHINESE_SYSTEM_PROMPT,
         "parsing": CHINESE_LLM_PARSING_PROMPT,
+        "general": CHINESE_GENERAL_CONVERSATION_PROMPT,
+        "general_system": CHINESE_GENERAL_SYSTEM_PROMPT,
         "welcome": CHINESE_WELCOME_MESSAGE,
         "help": CHINESE_HELP_MESSAGE,
         "error_entity_not_found": CHINESE_ERROR_ENTITY_NOT_FOUND,

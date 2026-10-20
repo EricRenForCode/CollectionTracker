@@ -4,7 +4,7 @@ import json
 from typing import Dict, Any, Optional, List, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from app.storage import get_storage
 from app.storage.conversation import get_conversation_store
@@ -209,22 +209,7 @@ class VoiceAgent:
                 }
             
             else:  # general
-                entities = self.storage.get_entities(device_id)
-                if not entities:
-                    return {
-                        "success": True,
-                        "response": get_prompt("error_no_collections", lang)
-                    }
-                else:
-                    if lang == "zh":
-                        response = f"我不确定你想做什么。目前正在追踪：{', '.join(entities)}。试试说“我喝了2杯咖啡”或“咖啡喝了多少？”"
-                    else:
-                        response = f"I'm not sure what you want to do. Currently tracking: {', '.join(entities)}. Try saying something like 'I consumed 2 coffees' or 'How much coffee have I consumed?'"
-                    return {
-                        "success": True,
-                        "response": response
-                    }
-        
+                return self._handle_general_llm(message, device_id, history, lang)
         except Exception as e:
             return {
                 "success": False,
@@ -347,6 +332,60 @@ class VoiceAgent:
 
         return {"success": True, "response": " ".join(parts)}
 
+    def _handle_general_llm(self, message: str, device_id: str,
+                            history: Optional[List[Dict[str, str]]],
+                            lang: str = "en") -> Dict[str, Any]:
+        """Answer small talk and follow-up questions with the conversation in view.
+
+        This branch used to ignore history completely and answer "you have no
+        collections yet" to anything it did not understand, so a follow-up such
+        as "what did I just say?" got a nonsense reply.
+        """
+        entities = self.storage.get_entities(device_id)
+
+        if history:
+            try:
+                reply = self._conversational_reply(message, entities, history, lang)
+                if reply:
+                    return {"success": True, "response": reply}
+            except Exception as e:
+                print("General conversation error: %s" % e)
+
+        return {"success": True, "response": self._fallback_general_response(entities, lang)}
+
+    def _conversational_reply(self, message: str, entities: List[str],
+                              history: List[Dict[str, str]], lang: str = "en") -> str:
+        collections = ", ".join(entities) if entities else ("none yet" if lang == "en" else "暂无")
+        prompt = get_prompt("general", lang).format(
+            collections=collections,
+            user_message=message,
+        )
+
+        messages = [SystemMessage(content=get_prompt("general_system", lang))]
+        for turn in history[-6:]:
+            content = str(turn.get("content", ""))
+            if turn.get("role") == "user":
+                messages.append(HumanMessage(content=content))
+            else:
+                messages.append(AIMessage(content=content))
+        messages.append(HumanMessage(content=prompt))
+
+        response = self.llm.invoke(messages)
+        return response.content.strip()
+
+    def _fallback_general_response(self, entities: List[str], lang: str = "en") -> str:
+        if not entities:
+            return get_prompt("error_no_collections", lang)
+        if lang == "zh":
+            return (
+                "我不确定你想做什么。目前正在追踪：%s。试试说“我喝了2杯咖啡”或“咖啡喝了多少？”"
+                % ", ".join(entities)
+            )
+        return (
+            "I'm not sure what you want to do. Currently tracking: %s. "
+            "Try saying something like 'I consumed 2 coffees' or 'How much coffee have I consumed?'"
+            % ", ".join(entities)
+        )
     def _handle_add_to_collection_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle adding items to collection (LLM-based)."""
         if not parsed.entities:
