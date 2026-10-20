@@ -2,6 +2,7 @@
 
 import sqlite3
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -19,8 +20,25 @@ class Database:
     @contextmanager
     def get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), timeout=20.0)
         conn.row_factory = sqlite3.Row
+        # The API server runs several worker processes against this one file.
+        # busy_timeout makes write/write contention wait instead of failing, and
+        # WAL keeps readers from blocking behind a writer.
+        conn.execute("PRAGMA busy_timeout=20000")
+        # Switching the journal mode needs an exclusive lock and is a persistent
+        # property of the file: when several workers start at the same time only
+        # one of them performs the switch, the others see "database is locked"
+        # and can safely carry on (the file is already in WAL mode).
+        for attempt in range(3):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError:
+                if attempt == 2:
+                    break
+                time.sleep(0.1 * (attempt + 1))
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             yield conn
             conn.commit()
@@ -118,6 +136,44 @@ class Database:
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_device_entity 
                 ON collections(device_id, entity_name COLLATE NOCASE)
+            """)
+            
+            # Conversation history and pending confirmations.
+            #
+            # These used to live in module-level dictionaries inside the API
+            # process, which meant each uvicorn worker had its own copy: a
+            # follow-up like "yes" only carried context when the request
+            # happened to land on the worker that had seen the previous turn.
+            # Keeping them here makes the conversation shared by all workers
+            # and durable across restarts.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_device
+                ON conversation_messages(device_id, id DESC)
+            """)
+            
+            # "Item X is not tracked yet - add it?" confirmations waiting for
+            # the user's yes/no. Scoped per device (it used to be a single
+            # process-wide dict, so one user's pending item could be fulfilled
+            # by another user's reply).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_actions (
+                    device_id TEXT NOT NULL,
+                    entity TEXT NOT NULL,
+                    transaction_type TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (device_id, entity)
+                )
             """)
     
     # Anonymous Users Operations
@@ -270,6 +326,125 @@ class Database:
             """, (device_id, key))
             return cursor.rowcount > 0
     
+    # Conversation and pending-action operations
+    #
+    # SQLite-backed so that every worker process (and every restart) sees the
+    # same conversation. Rows are trimmed/TTL-filtered to stay small.
+    
+    CONVERSATION_HISTORY_LIMIT = 10
+    CONVERSATION_TTL_SECONDS = 30 * 60
+    PENDING_TTL_SECONDS = 15 * 60
+    
+    def append_conversation_message(self, device_id: str, role: str, content: str,
+                                    keep: int = 10) -> int:
+        """Append one conversation turn and keep only the newest N rows."""
+        now = int(datetime.now().timestamp())
+        keep = max(int(keep), 1)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO conversation_messages (device_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (device_id, role, content, now))
+            cursor.execute("""
+                DELETE FROM conversation_messages
+                WHERE device_id = ?
+                  AND id NOT IN (
+                      SELECT id FROM conversation_messages
+                      WHERE device_id = ?
+                      ORDER BY id DESC
+                      LIMIT ?
+                  )
+            """, (device_id, device_id, keep))
+        return now
+    
+    def get_conversation_history(self, device_id: str, limit: int = 10,
+                                 ttl_seconds: int = 30 * 60) -> List[Dict[str, str]]:
+        """Return the recent conversation, oldest message first."""
+        cutoff = int(datetime.now().timestamp()) - int(ttl_seconds)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT role, content FROM conversation_messages
+                WHERE device_id = ? AND created_at >= ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (device_id, cutoff, max(int(limit), 1)))
+            rows = cursor.fetchall()
+        return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+    
+    def clear_conversation(self, device_id: str):
+        """Drop the conversation and any pending confirmation for a device."""
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM conversation_messages WHERE device_id = ?", (device_id,))
+            conn.execute("DELETE FROM pending_actions WHERE device_id = ?", (device_id,))
+    
+    def set_pending_action(self, device_id: str, entity: str, transaction_type: str,
+                           amount: float) -> None:
+        """Remember a transaction waiting for the user to confirm adding the item."""
+        now = int(datetime.now().timestamp())
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO pending_actions
+                (device_id, entity, transaction_type, amount, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(device_id, entity) DO UPDATE SET
+                    transaction_type = excluded.transaction_type,
+                    amount = excluded.amount,
+                    created_at = excluded.created_at
+            """, (device_id, entity, transaction_type, float(amount), now))
+    
+    def get_pending_actions(self, device_id: str,
+                            ttl_seconds: int = 15 * 60) -> List[Dict[str, Any]]:
+        """Return the device's unexpired pending actions, oldest first."""
+        cutoff = int(datetime.now().timestamp()) - int(ttl_seconds)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT entity, transaction_type, amount, created_at
+                FROM pending_actions
+                WHERE device_id = ? AND created_at >= ?
+                ORDER BY created_at
+            """, (device_id, cutoff))
+            rows = cursor.fetchall()
+        return [
+            {
+                "entity": row["entity"],
+                "transaction_type": row["transaction_type"],
+                "amount": row["amount"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    
+    def pop_pending_action(self, device_id: str, entity: str,
+                           ttl_seconds: int = 15 * 60) -> Optional[Dict[str, Any]]:
+        """Atomically read and delete one pending action (returns None if absent)."""
+        cutoff = int(datetime.now().timestamp()) - int(ttl_seconds)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT entity, transaction_type, amount, created_at
+                FROM pending_actions
+                WHERE device_id = ? AND entity = ? AND created_at >= ?
+            """, (device_id, entity, cutoff))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cursor.execute("""
+                DELETE FROM pending_actions WHERE device_id = ? AND entity = ?
+            """, (device_id, entity))
+            result = {
+                "entity": row["entity"],
+                "transaction_type": row["transaction_type"],
+                "amount": row["amount"],
+                "created_at": row["created_at"],
+            }
+        return result
+    
+    def clear_pending_actions(self, device_id: str) -> None:
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM pending_actions WHERE device_id = ?", (device_id,))
     # Analytics Operations
     
     def get_user_stats(self, days: int = 7) -> Dict:

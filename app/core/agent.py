@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.storage import get_storage
+from app.storage.conversation import get_conversation_store
 from app.api.models import Transaction
 from app.core.llm_config import get_reasoning_llm
 from app.core.prompts import get_prompt
@@ -57,7 +58,9 @@ class VoiceAgent:
     
     def __init__(self):
         self.storage = get_storage()
-        self.pending_transactions = {}  # Store pending transactions waiting for confirmation
+        # Pending confirmations ("item X is not tracked, add it?") live in
+        # SQLite so every worker process sees them and they survive restarts.
+        self.conversation = get_conversation_store()
         self.llm = get_reasoning_llm(temperature=0.1)  # Low temperature for consistent parsing
     
     def get_welcome_message(self, device_id: str, lang: str = "en") -> str:
@@ -163,6 +166,11 @@ class VoiceAgent:
         """
         try:
             message = message.strip()
+            # A short yes/no is resolved deterministically against the persisted
+            # pending confirmation, before the LLM gets a chance to drop it.
+            confirmation = self.handle_pending_confirmation(message, device_id, lang)
+            if confirmation is not None:
+                return confirmation
             
             # Parse message with LLM
             parsed = self._parse_message_with_llm(message, device_id, history, lang)
@@ -224,6 +232,121 @@ class VoiceAgent:
                 "response": f"Sorry, I encountered an error: {str(e)}"
             }
     
+    # Short replies that resolve a pending "add this item?" question. These are
+    # handled without the LLM on purpose: the model answering "yes" from memory
+    # used to depend on which worker process handled the request.
+    _AFFIRMATIVE_REPLIES = {
+        "是", "是的", "是滴", "对", "对的", "好", "好的", "行", "可以", "确认",
+        "确定", "嗯", "嗯嗯", "添加", "加上", "加", "新增", "要", "同意",
+        "yes", "y", "yeah", "yep", "ok", "okay", "sure", "add", "confirm",
+    }
+    _NEGATIVE_REPLIES = {
+        "不", "不是", "不要", "不用", "不用了", "取消", "别", "算了", "否",
+        "no", "n", "nope", "cancel", "stop",
+    }
+
+    @staticmethod
+    def _normalise_reply(message: str) -> str:
+        return message.strip().strip("。.!！?？,，、~～ ").lower()
+
+    @staticmethod
+    def _format_amount(amount: float) -> str:
+        return ("%g" % float(amount))
+
+    _AFFIRMATIVE_PREFIXES = (
+        "是", "好", "对", "行", "可以", "确认", "添加", "加上", "加", "要",
+        "同意", "ok", "yes", "sure", "add", "confirm",
+    )
+    _NEGATIVE_PREFIXES = ("不", "别", "取消", "算了", "no", "cancel", "nope", "stop")
+
+    def _is_affirmative(self, reply: str) -> bool:
+        if reply in self._AFFIRMATIVE_REPLIES:
+            return True
+        # Short variants such as "添加吧" / "好的添加" are still a clear yes.
+        return len(reply) <= 8 and any(reply.startswith(t) for t in self._AFFIRMATIVE_PREFIXES)
+
+    def _is_negative(self, reply: str) -> bool:
+        if reply in self._NEGATIVE_REPLIES:
+            return True
+        return len(reply) <= 8 and any(reply.startswith(t) for t in self._NEGATIVE_PREFIXES)
+
+    def handle_pending_confirmation(self, message: str, device_id: str,
+                                    lang: str = "en") -> Optional[Dict[str, Any]]:
+        """Resolve a short yes/no reply against persisted pending actions.
+
+        Returns a result dict when the reply was a confirmation or a denial, or
+        None when the message should go through the normal LLM pipeline.
+        """
+        pending = self.conversation.list_pending(device_id)
+        if not pending:
+            return None
+
+        reply = self._normalise_reply(message)
+        names = ", ".join(item["entity"] for item in pending)
+
+        if self._is_negative(reply):
+            self.conversation.clear_pending(device_id)
+            response = (
+                "好的，已取消 %s 的记录。" % names
+                if lang == "zh"
+                else "Okay, cancelled recording %s." % names
+            )
+            return {"success": True, "response": response}
+
+        if not self._is_affirmative(reply):
+            return None
+
+        return self._fulfil_pending_actions(device_id, pending, lang)
+
+    def _fulfil_pending_actions(self, device_id: str, pending: List[Dict[str, Any]],
+                                lang: str = "en") -> Dict[str, Any]:
+        """Add confirmed items to the collection and record their transactions."""
+        added = []
+        recorded = []
+
+        for item in pending:
+            entity = item["entity"].lower()
+            if not self.storage.entity_exists(device_id, entity):
+                self.storage.add_entity(device_id, entity)
+                added.append(entity)
+
+            entity_proper = self.storage.get_entity_case_preserved(device_id, entity) or entity
+            transaction = Transaction(
+                entity=entity_proper,
+                transaction_type=item["transaction_type"],
+                amount=item["amount"],
+                description=None,
+                timestamp=datetime.now(),
+            )
+            self.storage.add_transaction(device_id, transaction)
+            self.conversation.pop_pending(device_id, entity)
+
+            amount = self._format_amount(item["amount"])
+            if lang == "zh":
+                type_zh = "消耗" if item["transaction_type"] == "consumed" else "入库"
+                recorded.append("%s %s %s" % (entity_proper, type_zh, amount))
+            else:
+                recorded.append("%s %s %s" % (entity_proper, item["transaction_type"], amount))
+
+        entities = self.storage.get_entities(device_id)
+        parts = []
+        if lang == "zh":
+            if added:
+                parts.append("已将 %s 添加到你的集合。" % ", ".join(added))
+            if recorded:
+                parts.append("已记录：%s。" % ", ".join(recorded))
+            if entities:
+                parts.append("目前正在追踪：%s" % ", ".join(entities))
+        else:
+            if added:
+                parts.append("Added %s to your collection." % ", ".join(added))
+            if recorded:
+                parts.append("Recorded: %s." % ", ".join(recorded))
+            if entities:
+                parts.append("Currently tracking: %s" % ", ".join(entities))
+
+        return {"success": True, "response": " ".join(parts)}
+
     def _handle_add_to_collection_llm(self, parsed: ParsedIntent, device_id: str, lang: str = "en") -> Dict[str, Any]:
         """Handle adding items to collection (LLM-based)."""
         if not parsed.entities:
@@ -263,13 +386,12 @@ class VoiceAgent:
         else:
             responses.append(f"Currently tracking: {', '.join(all_entities)}")
         
-        # Check if any of the added items have pending transactions
+        # Fulfil any confirmation that was waiting for these items to exist.
         fulfilled_transactions = []
         for item in added:
-            if item in self.pending_transactions:
-                pending = self.pending_transactions.pop(item)
-                # Create and store transaction
-                entity_proper = self.storage.get_entity_case_preserved(device_id, item)
+            pending = self.conversation.pop_pending(device_id, item)
+            if pending:
+                entity_proper = self.storage.get_entity_case_preserved(device_id, item) or item
                 transaction = Transaction(
                     entity=entity_proper,
                     transaction_type=pending["transaction_type"],
@@ -278,7 +400,9 @@ class VoiceAgent:
                     timestamp=datetime.now()
                 )
                 self.storage.add_transaction(device_id, transaction)
-                fulfilled_transactions.append(f"{entity_proper} {pending['transaction_type']} {pending['amount']}")
+                fulfilled_transactions.append(
+                    "%s %s %s" % (entity_proper, pending["transaction_type"], pending["amount"])
+                )
         
         if fulfilled_transactions:
             if lang == "zh":
@@ -374,12 +498,8 @@ class VoiceAgent:
         # Check if entity exists in collection
         if not self.storage.entity_exists(device_id, entity):
             # Ask user if they want to add it
-            self.pending_transactions[entity] = {
-                "entity": entity,
-                "transaction_type": parsed.transaction_type,
-                "amount": parsed.amount,
-                "timestamp": datetime.now()
-            }
+            self.conversation.set_pending(device_id, entity,
+                                          parsed.transaction_type, parsed.amount)
             suffix = " (Reply 'yes' to add it, or 'no' to cancel)" if lang == "en" else "（回复“是”添加，或回复“不”取消）"
             return {
                 "success": True,

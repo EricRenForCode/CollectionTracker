@@ -10,6 +10,7 @@ from app.api.models import VoiceRequest, VoiceResponse, StatisticsQuery
 from app.core.agent import create_voice_agent
 from app.utils.voice_utils import speech_to_text, text_to_speech
 from app.storage import get_storage
+from app.storage.conversation import get_conversation_store
 from app.auth import UserIdentificationMiddleware, get_current_device_id, get_current_user, get_session_manager
 
 app = FastAPI(
@@ -30,27 +31,16 @@ app.add_middleware(
 # Add user identification middleware
 app.add_middleware(UserIdentificationMiddleware)
 
-# Initialize agent, storage, and session manager
+# Initialize agent, storage, session manager, and conversation state
 agent = create_voice_agent()
 storage = get_storage()
 session_manager = get_session_manager()
 
-# In-memory session history (per device_id)
-sessions = {}
-
-def get_session_history(device_id: str) -> list:
-    """Get or create session history for a device."""
-    if device_id not in sessions:
-        sessions[device_id] = []
-    return sessions[device_id]
-
-def add_to_session_history(device_id: str, role: str, content: str):
-    """Add a message to session history for a device."""
-    history = get_session_history(device_id)
-    history.append({"role": role, "content": content})
-    # Keep only last 10 messages to avoid bloat
-    if len(history) > 10:
-        sessions[device_id] = history[-10:]
+# Conversation history and pending confirmations live in SQLite, not process
+# memory: the server runs several uvicorn workers, so an in-memory dict made
+# follow-up turns ("是" after "add it?") work only when the request happened to
+# hit the same worker again.
+conversation = get_conversation_store()
 
 @app.get("/")
 async def serve_chat_ui():
@@ -94,26 +84,24 @@ async def process_voice(voice_request: VoiceRequest, request: Request) -> VoiceR
             )
         
         # Process with agent
-        history = get_session_history(device_id)
+        history = conversation.get_history(device_id)
         lang = voice_request.language or "en"
-        
+
         result = agent.process_message(input_text, device_id, history, lang=lang)
-        
-        if not result["success"]:
-            raise HTTPException(
-                status_code=500,
-                detail=result.get("error", "Agent processing failed")
-            )
-        
-        response_text = result["response"]
-        
-        # Update history
-        add_to_session_history(device_id, "user", input_text)
-        add_to_session_history(device_id, "assistant", response_text)
-        
+
+        # A handler-level "success: false" is a user-facing reply (e.g. "which
+        # item?"), not a server error: return it as text instead of a 500.
+        response_text = (
+            result.get("response")
+            or result.get("error")
+            or ("抱歉，处理失败，请重试。" if lang == "zh" else "Sorry, I couldn't process that.")
+        )
+
+        conversation.append_exchange(device_id, input_text, response_text)
+
         # Optionally generate audio response
         # audio_response = text_to_speech(response_text)  # Uncomment if needed
-        
+
         return VoiceResponse(
             text=response_text,
             audio_data=None,  # Set to audio_response if TTS is enabled
@@ -144,24 +132,23 @@ async def chat(message: str, request: Request, lang: str = "en") -> dict:
         if not device_id:
             raise HTTPException(status_code=401, detail="无法识别设备")
         
-        history = get_session_history(device_id)
+        history = conversation.get_history(device_id)
         result = agent.process_message(message, device_id, history, lang=lang)
-        
-        if not result["success"]:
-            raise HTTPException(
-                status_code=500,
-                detail=result.get("error", "Agent processing failed")
-            )
-        
-        response_text = result["response"]
-        
-        # Update history
-        add_to_session_history(device_id, "user", message)
-        add_to_session_history(device_id, "assistant", response_text)
-        
+
+        # Handler-level failures carry a user-facing explanation (e.g. "单次交易
+        # 只能记录一个数量"). They used to surface as HTTP 500 "Agent processing
+        # failed", which the client rendered as an opaque error.
+        response_text = (
+            result.get("response")
+            or result.get("error")
+            or ("抱歉，处理失败，请重试。" if lang == "zh" else "Sorry, I couldn't process that.")
+        )
+
+        conversation.append_exchange(device_id, message, response_text)
+
         return {
             "response": response_text,
-            "success": True
+            "success": bool(result.get("success", True)),
         }
     
     except HTTPException:
@@ -362,6 +349,8 @@ async def clear_data(request: Request, include_collections: bool = False):
         if not device_id:
             raise HTTPException(status_code=401, detail="无法识别设备")
         
+        conversation.clear_pending(device_id)
+
         if include_collections:
             storage.clear_all_including_collections(device_id)
             return {"message": "All data including collections cleared successfully"}
